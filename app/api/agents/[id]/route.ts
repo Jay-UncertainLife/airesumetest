@@ -1,11 +1,14 @@
 import { NextResponse } from "next/server";
 import { readStore, writeStore } from "@/lib/store";
 
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 export async function GET(_: Request, { params }: { params: { id: string } }) {
   const store = await readStore();
   const agent = store.agents.find((item) => item.id === params.id);
   if (!agent) return NextResponse.json({ error: "agent not found" }, { status: 404 });
-  return NextResponse.json({ agent });
+  return NextResponse.json({ agent }, { headers: { "Cache-Control": "no-store" } });
 }
 
 export async function PATCH(request: Request, { params }: { params: { id: string } }) {

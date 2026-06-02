@@ -2,9 +2,15 @@ import { NextResponse } from "next/server";
 import { analyzeResumeWithDeepSeek } from "@/lib/ai";
 import { addCandidate, addEvent, readStore, writeStore } from "@/lib/store";
 
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 export async function GET() {
   const store = await readStore();
-  return NextResponse.json({ candidates: store.candidates });
+  return NextResponse.json(
+    { candidates: store.candidates, eventLogs: store.eventLogs },
+    { headers: { "Cache-Control": "no-store" } }
+  );
 }
 
 export async function POST(request: Request) {

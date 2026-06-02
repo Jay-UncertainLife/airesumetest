@@ -44,21 +44,30 @@ export async function readStore(): Promise<Store> {
 }
 
 export async function writeStore(store: Store) {
+  const normalized = normalizeStore(store);
   if (process.env.VERCEL) {
-    globalThis.__AI_CUT_ARENA_STORE__ = normalizeStore(store);
+    globalThis.__AI_CUT_ARENA_STORE__ = normalized;
     return;
   }
   await fs.mkdir(path.dirname(storePath), { recursive: true });
-  await fs.writeFile(storePath, JSON.stringify(store, null, 2), "utf8");
+  await fs.writeFile(storePath, JSON.stringify(normalized, null, 2), "utf8");
 }
 
 function normalizeStore(store: Store) {
-  store.turnScores = store.turnScores ?? [];
-  store.jobRoles = store.jobRoles ?? [];
+  store.candidates = store.candidates ?? [];
+  store.agents = store.agents ?? [];
+  store.stages = store.stages ?? [];
+  store.messages = store.messages ?? [];
   store.workspaceMessages = store.workspaceMessages ?? [];
+  store.eventLogs = store.eventLogs ?? [];
+  store.evaluations = store.evaluations ?? [];
+  store.turnScores = store.turnScores ?? [];
+  store.jobRoles = (store.jobRoles ?? []).map(normalizeJobRole);
+
   if (store.jobRoles.length === 0) {
     store.jobRoles.push(defaultJobRole());
   }
+
   if (store.agents.length === 0) {
     store.agents.push(...defaultAgents());
   } else {
@@ -67,6 +76,12 @@ function normalizeStore(store: Store) {
     const missingAgents = defaultAgents().filter((agent) => !requiredRoles.has(agent.agent_role));
     if (missingAgents.length > 0) store.agents.push(...missingAgents);
   }
+
+  store.candidates = store.candidates.map((candidate) => ({
+    ...candidate,
+    target_role: normalizeTargetRole(candidate.target_role),
+    final_recommendation: normalizeRecommendation(candidate.final_recommendation)
+  }));
   return store;
 }
 
@@ -87,8 +102,8 @@ export function defaultAgents(): Agent[] {
   return [
     {
       id: id("agent"),
-      name: "AI 产品经理主考官",
-      target_role: "AI 产品负责人",
+      name: "AI 产品负责人考核官",
+      target_role: "AI 产品经理",
       agent_role: "lead_examiner",
       model_provider: "deepseek",
       model_name: "deepseek-chat",
@@ -97,7 +112,7 @@ export function defaultAgents(): Agent[] {
       exam_goal: "评估候选人是否具备 AI 产品经理的场景理解、MVP 收敛和业务判断能力。",
       opening_prompt: "请候选人在限定时间内设计一个面向招聘考核场景的 AI 产品 MVP。",
       follow_up_rules: "围绕用户、场景、闭环、取舍、AI 原生性追问。",
-      pressure_rules: "在回答空泛或范围失控时追加时间、人力、API、误判和证据约束。",
+      pressure_rules: "在回答空泛或范围失控时追加时间、人力、KPI、误判和证据约束。",
       scoring_rubric: "按 AI 产品经理动态能力组合逐轮评分。",
       cut_rules: "如果候选人连续无法说明核心闭环、取舍失控或方案不可落地，建议 Cut。",
       status: "enabled",
@@ -106,7 +121,7 @@ export function defaultAgents(): Agent[] {
     {
       id: id("agent"),
       name: "产品闭环评委",
-      target_role: "AI 产品负责人",
+      target_role: "AI 产品经理",
       agent_role: "product_judge",
       model_provider: "deepseek",
       model_name: "deepseek-chat",
@@ -124,7 +139,7 @@ export function defaultAgents(): Agent[] {
     {
       id: id("agent"),
       name: "压力与落地评委",
-      target_role: "AI 产品负责人",
+      target_role: "AI 产品经理",
       agent_role: "pressure_judge",
       model_provider: "deepseek",
       model_name: "deepseek-chat",
@@ -142,7 +157,7 @@ export function defaultAgents(): Agent[] {
     {
       id: id("agent"),
       name: "证据链评委",
-      target_role: "AI 产品负责人",
+      target_role: "AI 产品经理",
       agent_role: "evidence_judge",
       model_provider: "openai",
       model_name: "gpt-4o-mini",
@@ -161,13 +176,79 @@ export function defaultAgents(): Agent[] {
 }
 
 function normalizeAgents(agents: Agent[]) {
-  return agents.map((agent) => ({
-    ...agent,
-    agent_role: agent.agent_role ?? "lead_examiner",
-    model_provider: agent.model_provider ?? "deepseek",
-    model_name: agent.model_name ?? (agent.model_provider === "openai" ? "gpt-4o-mini" : "deepseek-chat"),
-    responsibility: agent.responsibility ?? "主持关卡推进，综合能力维度与逐轮得分决定继续追问、进入下一关或 Cut。"
-  }));
+  return agents.map((agent) => {
+    const modelProvider = agent.model_provider ?? "deepseek";
+    return {
+      ...agent,
+      name: cleanText(agent.name, fallbackAgentName(agent.agent_role)),
+      target_role: normalizeTargetRole(agent.target_role),
+      agent_role: agent.agent_role ?? "lead_examiner",
+      model_provider: modelProvider,
+      model_name: agent.model_name ?? (modelProvider === "openai" ? "gpt-4o-mini" : "deepseek-chat"),
+      persona: cleanText(agent.persona, "直接、追问型、业务结果导向"),
+      responsibility: cleanText(agent.responsibility, "主持关卡推进，综合能力维度与逐轮得分决定继续追问、进入下一关或 Cut。"),
+      exam_goal: cleanText(agent.exam_goal, "评估候选人是否具备 AI 产品经理岗位的核心能力。"),
+      opening_prompt: cleanText(agent.opening_prompt, "请候选人在限定时间内完成 AI 产品 MVP 方案。"),
+      follow_up_rules: cleanText(agent.follow_up_rules, "围绕用户、场景、闭环、取舍、落地方式追问。"),
+      pressure_rules: cleanText(agent.pressure_rules, "加入时间、人力、技术和误判约束。"),
+      scoring_rubric: cleanText(agent.scoring_rubric, "按能力维度和岗位匹配度评分。"),
+      cut_rules: cleanText(agent.cut_rules, "若无法说明核心闭环、取舍失控或方案不可落地，建议 Cut。"),
+      status: agent.status ?? "enabled"
+    };
+  });
+}
+
+function normalizeJobRole(job: Store["jobRoles"][number]) {
+  const fallback = defaultJobRole();
+  const hasCorruptedRows =
+    !job.basic_participation?.length ||
+    job.basic_participation.some((row) => isCorruptedText(row.ai_role) || isCorruptedText(row.reason));
+  const hasCorruptedDimensions =
+    !job.ability_dimensions?.length ||
+    job.ability_dimensions.some((item) => isCorruptedText(item.name) || isCorruptedText(item.description) || isCorruptedText(item.observation));
+  return {
+    ...fallback,
+    ...job,
+    name: normalizeTargetRole(job.name),
+    description: cleanText(job.description, fallback.description),
+    ability_dimensions: hasCorruptedDimensions ? fallback.ability_dimensions : job.ability_dimensions,
+    basic_participation: hasCorruptedRows ? fallback.basic_participation : job.basic_participation.slice(0, 4),
+    ability_participation: hasCorruptedRows ? fallback.ability_participation : job.ability_participation.slice(0, 4)
+  };
+}
+
+function normalizeTargetRole(role?: string) {
+  if (!role || role.includes("产品负责人") || role.includes("浜у搧") || role.includes("璐熻矗") || isCorruptedText(role)) return "AI 产品经理";
+  return role;
+}
+
+function normalizeRecommendation(value?: string) {
+  if (!value) return undefined;
+  if (value === "Cut") return "Cut";
+  if (value.includes("观察") || value.includes("瑙傚療")) return "继续观察";
+  if (value.includes("通过") || value.includes("閫氳繃")) return "通过";
+  return undefined;
+}
+
+function cleanText(value: string | undefined, fallback: string) {
+  if (!value) return fallback;
+  if (isCorruptedText(value)) return fallback;
+  return value;
+}
+
+function isCorruptedText(value?: string) {
+  return Boolean(value && /[\uFFFD]|[鐨勷汉鍔濮璐熻矗]|[ÃÂäåæçèéãï¼½]/.test(value));
+}
+
+function fallbackAgentName(role: Agent["agent_role"]) {
+  const names: Record<Agent["agent_role"], string> = {
+    lead_examiner: "AI 产品负责人考核官",
+    product_judge: "产品闭环评委",
+    pressure_judge: "压力与落地评委",
+    evidence_judge: "证据链评委",
+    custom: "自定义考核官"
+  };
+  return names[role ?? "custom"];
 }
 
 export function addEvent(

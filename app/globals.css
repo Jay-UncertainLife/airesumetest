@@ -105,6 +105,45 @@ select {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.grid-4 {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.compact-card {
+  display: flex;
+  min-height: 180px;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.compact-card p {
+  margin: 0;
+}
+
+.dimension-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.dimension-chip {
+  background: #fbfdfb;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+}
+
+.dimension-chip span {
+  color: var(--brand);
+  font-weight: 800;
+}
+
+.dimension-chip small {
+  color: var(--muted);
+}
+
 .arena-grid {
   display: grid;
   gap: 16px;
@@ -452,6 +491,8 @@ select {
 
   .arena-grid,
   .grid-3,
+  .grid-4,
+  .dimension-grid,
   .plan-view {
     grid-template-columns: 1fr;
   }

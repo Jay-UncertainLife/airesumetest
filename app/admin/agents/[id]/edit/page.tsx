@@ -25,11 +25,16 @@ export default function EditAgentPage({ params }: { params: { id: string } }) {
   const router = useRouter();
   const [form, setForm] = useState<Record<string, string> | null>(null);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
 
   useEffect(() => {
-    fetch(`/api/agents/${params.id}`)
-      .then((res) => res.json())
-      .then((data) => setForm(data.agent));
+    fetch(`/api/agents/${params.id}`, { cache: "no-store" })
+      .then((res) => {
+        if (!res.ok) throw new Error("agent not found");
+        return res.json();
+      })
+      .then((data) => setForm(data.agent))
+      .catch(() => setError("Agent 加载失败，可能已被删除或本地数据未刷新。"));
   }, [params.id]);
 
   function update(key: string, value: string) {
@@ -39,21 +44,35 @@ export default function EditAgentPage({ params }: { params: { id: string } }) {
   async function save() {
     if (!form) return;
     setLoading(true);
-    await fetch(`/api/agents/${params.id}`, {
+    setError("");
+    const res = await fetch(`/api/agents/${params.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(form)
     });
+    setLoading(false);
+    if (!res.ok) {
+      setError("保存失败，请稍后重试。");
+      return;
+    }
     router.push("/admin/agents");
+    router.refresh();
   }
 
   async function remove() {
     if (!confirm("确认删除这个 Agent？")) return;
     setLoading(true);
-    await fetch(`/api/agents/${params.id}`, { method: "DELETE" });
+    const res = await fetch(`/api/agents/${params.id}`, { method: "DELETE" });
+    setLoading(false);
+    if (!res.ok) {
+      setError("删除失败，请稍后重试。");
+      return;
+    }
     router.push("/admin/agents");
+    router.refresh();
   }
 
+  if (error && !form) return <div className="container"><BackLink /><p className="badge cut">{error}</p></div>;
   if (!form) return <div className="container">加载 Agent...</div>;
 
   return (
@@ -63,32 +82,11 @@ export default function EditAgentPage({ params }: { params: { id: string } }) {
         <h1 className="title">编辑 AI Agent</h1>
         {fields.map((key) => (
           <div className="field" key={key}>
-            <label>{key}</label>
-            {key === "status" ? (
-              <select className="select" value={form[key]} onChange={(event) => update(key, event.target.value)}>
-                <option value="enabled">enabled</option>
-                <option value="disabled">disabled</option>
-              </select>
-            ) : key === "agent_role" ? (
-              <select className="select" value={form[key]} onChange={(event) => update(key, event.target.value)}>
-                <option value="lead_examiner">lead_examiner</option>
-                <option value="product_judge">product_judge</option>
-                <option value="pressure_judge">pressure_judge</option>
-                <option value="evidence_judge">evidence_judge</option>
-                <option value="custom">custom</option>
-              </select>
-            ) : key === "model_provider" ? (
-              <select className="select" value={form[key]} onChange={(event) => update(key, event.target.value)}>
-                <option value="deepseek">deepseek</option>
-                <option value="openai">openai</option>
-              </select>
-            ) : key.includes("rules") || key.includes("prompt") || key === "exam_goal" || key === "responsibility" ? (
-              <textarea className="textarea" value={form[key] ?? ""} onChange={(event) => update(key, event.target.value)} />
-            ) : (
-              <input className="input" value={form[key] ?? ""} onChange={(event) => update(key, event.target.value)} />
-            )}
+            <label>{fieldLabel(key)}</label>
+            <Field keyName={key} value={form[key] ?? ""} onChange={(next) => update(key, next)} />
           </div>
         ))}
+        {error ? <p className="badge cut">{error}</p> : null}
         <div className="actions">
           <button className="btn" onClick={save} disabled={loading}>{loading ? "保存中..." : "保存修改"}</button>
           <button className="btn danger" onClick={remove} disabled={loading}>删除 Agent</button>
@@ -96,4 +94,40 @@ export default function EditAgentPage({ params }: { params: { id: string } }) {
       </section>
     </div>
   );
+}
+
+function Field({ keyName, value, onChange }: { keyName: string; value: string; onChange: (value: string) => void }) {
+  if (keyName === "status") {
+    return <select className="select" value={value} onChange={(event) => onChange(event.target.value)}><option value="enabled">enabled</option><option value="disabled">disabled</option></select>;
+  }
+  if (keyName === "agent_role") {
+    return <select className="select" value={value} onChange={(event) => onChange(event.target.value)}><option value="lead_examiner">lead_examiner</option><option value="product_judge">product_judge</option><option value="pressure_judge">pressure_judge</option><option value="evidence_judge">evidence_judge</option><option value="custom">custom</option></select>;
+  }
+  if (keyName === "model_provider") {
+    return <select className="select" value={value} onChange={(event) => onChange(event.target.value)}><option value="deepseek">deepseek</option><option value="openai">openai</option></select>;
+  }
+  if (keyName.includes("rules") || keyName.includes("prompt") || keyName === "exam_goal" || keyName === "responsibility" || keyName === "cut_rules") {
+    return <textarea className="textarea" value={value} onChange={(event) => onChange(event.target.value)} />;
+  }
+  return <input className="input" value={value} onChange={(event) => onChange(event.target.value)} />;
+}
+
+function fieldLabel(key: string) {
+  const labels: Record<string, string> = {
+    name: "Agent 名称",
+    target_role: "目标岗位",
+    agent_role: "Agent 分工",
+    model_provider: "模型供应商",
+    model_name: "具体模型",
+    persona: "角色风格",
+    responsibility: "职责",
+    exam_goal: "考核目标",
+    opening_prompt: "开场提示词",
+    follow_up_rules: "追问规则",
+    pressure_rules: "加压规则",
+    scoring_rubric: "评分规则",
+    cut_rules: "Cut 规则",
+    status: "状态"
+  };
+  return labels[key] ?? key;
 }
