@@ -7,15 +7,11 @@ export default function HomePage() {
         <p className="badge">小闭环产品版</p>
         <h1 className="title">AI Cut Arena</h1>
         <p className="subtitle">
-          一个由 AI 考核官主动追问、施加约束、记录过程证据，并生成通过 / 继续观察 / Cut 建议的闯关考核 MVP。
+          由审核员建档、AI 考核官追问、模型评分、过程留痕和人工复核共同构成的 AI 产品经理考核 MVP。
         </p>
         <div className="actions">
-          <Link className="btn" href="/candidate/login">
-            候选人登录
-          </Link>
-          <Link className="btn secondary" href="/admin/login">
-            审核人员登录
-          </Link>
+          <Link className="btn secondary" href="/candidate/login">候选人入口说明</Link>
+          <Link className="btn" href="/admin/login">审核人员登录</Link>
         </div>
       </section>
     </div>

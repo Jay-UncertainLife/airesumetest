@@ -11,14 +11,16 @@ export default function CandidatePrepPage() {
   const [jobRole, setJobRole] = useState<JobRole | null>(null);
   const [agents, setAgents] = useState<Agent[]>([]);
   const [loading, setLoading] = useState(false);
+  const dimensions = useMemo(() => jobRole?.ability_dimensions ?? [], [jobRole]);
 
   useEffect(() => {
     const candidateId = localStorage.getItem("candidate_id");
-    if (!candidateId) {
+    const token = localStorage.getItem("candidate_token");
+    if (!candidateId || !token) {
       router.push("/candidate/login");
       return;
     }
-    fetch(`/api/candidates/${candidateId}`, { cache: "no-store" })
+    fetch(`/api/candidates/${candidateId}`, { cache: "no-store", headers: { "x-candidate-token": token } })
       .then((res) => res.json())
       .then((data) => {
         setCandidate(data.candidate);
@@ -29,12 +31,15 @@ export default function CandidatePrepPage() {
       .then((data) => setJobRole(data.jobRoles?.[0] ?? null));
   }, [router]);
 
-  const dimensions = useMemo(() => jobRole?.ability_dimensions ?? [], [jobRole]);
-
   async function enterBasicStage() {
     if (!candidate) return;
+    const token = localStorage.getItem("candidate_token");
     setLoading(true);
-    await fetch(`/api/candidates/${candidate.id}/stage/advance`, { method: "POST" });
+    await fetch(`/api/candidates/${candidate.id}/stage/advance`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-candidate-token": token ?? "" },
+      body: JSON.stringify({ candidate_token: token })
+    });
     router.push("/candidate/arena");
   }
 
@@ -44,22 +49,10 @@ export default function CandidatePrepPage() {
     <div className="container">
       <FlowGuide active={2} />
       <h1 className="title">面试关卡准备</h1>
-      <p className="subtitle">
-        已确认目标岗位：{jobRole.name} · 难度 {jobRole.difficulty}。下面只展示本次考核会真正启用的配置。
-      </p>
+      <p className="subtitle">目标岗位：{candidate.target_role ?? jobRole.name} · 难度 {candidate.target_difficulty ?? jobRole.difficulty}。系统已基于审核员上传的简历、面试评价和 DeepSeek 画像完成准备。</p>
 
       <section className="panel">
-        <div className="actions" style={{ justifyContent: "space-between", alignItems: "flex-start" }}>
-          <div>
-            <h2>{jobRole.name}</h2>
-            <p className="muted">{jobRole.description}</p>
-          </div>
-          <span className="badge">目标难度 {jobRole.difficulty}</span>
-        </div>
-      </section>
-
-      <section className="panel">
-        <h2>本次启用的 4 个 AI 考核官</h2>
+        <h2>本次启用的 AI 考核官</h2>
         <div className="grid grid-4">
           {agents.map((agent) => (
             <div className="card compact-card" key={agent.id}>
@@ -85,36 +78,11 @@ export default function CandidatePrepPage() {
         </div>
       </section>
 
-      <div className="grid" style={{ gridTemplateColumns: "1fr 1fr", alignItems: "start" }}>
-        <ParticipationSummary title="基础关卡参与度" rows={jobRole.basic_participation} />
-        <ParticipationSummary title="能力关卡参与度" rows={jobRole.ability_participation} />
-      </div>
-
       <div className="actions">
         <button className="btn" onClick={enterBasicStage} disabled={loading}>
-          {loading ? "正在生成基础关卡..." : "确认准备完成，进入基础关卡"}
+          {loading ? "正在调用模型生成基础关卡..." : "确认准备完成，进入基础关卡"}
         </button>
       </div>
     </div>
-  );
-}
-
-function ParticipationSummary({ title, rows }: { title: string; rows: JobRole["basic_participation"] }) {
-  return (
-    <section className="panel">
-      <h2>{title}</h2>
-      <table className="table">
-        <thead><tr><th>考核官</th><th>参与度</th><th>作用</th></tr></thead>
-        <tbody>
-          {rows.slice(0, 4).map((row) => (
-            <tr key={`${row.ai_role}-${row.level}`}>
-              <td>{row.ai_role}</td>
-              <td><span className="badge">{row.level}</span></td>
-              <td>{row.reason}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </section>
   );
 }

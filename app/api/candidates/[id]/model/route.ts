@@ -1,22 +1,23 @@
 import { NextResponse } from "next/server";
-import { addEvent, readStore, writeStore } from "@/lib/store";
+import { assertCandidateToken, jsonError, readJson, tokenFromRequest } from "@/lib/apiUtils";
+import { updateCandidate } from "@/lib/repositories/candidates";
+import { addEvent } from "@/lib/repositories/events";
 import { ModelProvider } from "@/lib/types";
 
 export async function POST(request: Request, { params }: { params: { id: string } }) {
-  const { model_provider } = await request.json();
-  if (!["deepseek", "openai"].includes(model_provider)) {
-    return NextResponse.json({ error: "invalid model_provider" }, { status: 400 });
+  try {
+    const body = await readJson<{ model_provider: ModelProvider; candidate_token?: string }>(request);
+    const candidate = await assertCandidateToken(params.id, tokenFromRequest(request, body));
+    const model = body.model_provider === "openai" ? "openai" : "deepseek";
+    const updated = await updateCandidate(candidate.id, { selected_model: model });
+    await addEvent({
+      candidate_id: candidate.id,
+      event_type: "model_selected",
+      raw_content: `候选人选择模型：${model}`,
+      ai_summary: "模型选择已留痕"
+    });
+    return NextResponse.json({ candidate: updated });
+  } catch (error) {
+    return jsonError(error, "candidate_model_update_failed");
   }
-  const store = await readStore();
-  const candidate = store.candidates.find((item) => item.id === params.id);
-  if (!candidate) return NextResponse.json({ error: "candidate not found" }, { status: 404 });
-  candidate.selected_model = model_provider as ModelProvider;
-  addEvent(store, {
-    candidate_id: params.id,
-    event_type: "model_selected",
-    raw_content: `候选人切换对话模型：${model_provider}`,
-    ai_summary: "模型切换已写入过程留痕"
-  });
-  await writeStore(store);
-  return NextResponse.json({ candidate });
 }

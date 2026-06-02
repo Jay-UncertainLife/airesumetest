@@ -1,24 +1,25 @@
 import { NextResponse } from "next/server";
-import { now, readStore, writeStore } from "@/lib/store";
+import { listJobRoles, updateJobRole } from "@/lib/repositories/jobRoles";
+import { jsonError, readJson } from "@/lib/apiUtils";
+import { JobRole } from "@/lib/types";
+
+export const dynamic = "force-dynamic";
 
 export async function GET() {
-  const store = await readStore();
-  return NextResponse.json({ jobRoles: store.jobRoles });
+  try {
+    return NextResponse.json({ jobRoles: await listJobRoles() });
+  } catch (error) {
+    return jsonError(error, "job_roles_list_failed");
+  }
 }
 
 export async function PATCH(request: Request) {
-  const body = await request.json();
-  const store = await readStore();
-  const job = store.jobRoles.find((item) => item.id === body.id) ?? store.jobRoles[0];
-  if (!job) return NextResponse.json({ error: "job role not found" }, { status: 404 });
-  job.name = body.name ?? job.name;
-  job.difficulty = body.difficulty ?? job.difficulty;
-  job.description = body.description ?? job.description;
-  job.enabled = body.enabled ?? job.enabled;
-  job.ability_dimensions = body.ability_dimensions ?? job.ability_dimensions;
-  job.basic_participation = body.basic_participation ?? job.basic_participation;
-  job.ability_participation = body.ability_participation ?? job.ability_participation;
-  job.updated_at = now();
-  await writeStore(store);
-  return NextResponse.json({ jobRole: job });
+  try {
+    const body = await readJson<Partial<JobRole> & { id: string }>(request);
+    if (!body.id) return NextResponse.json({ error: "job_role_id_required" }, { status: 400 });
+    const jobRole = await updateJobRole(body.id, body);
+    return NextResponse.json({ jobRole });
+  } catch (error) {
+    return jsonError(error, "job_role_update_failed");
+  }
 }

@@ -9,19 +9,28 @@ export default function FinalSubmitPage() {
   const [finalSolution, setFinalSolution] = useState("");
   const [aiUsageNote, setAiUsageNote] = useState("");
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
 
   async function submit() {
     const candidateId = localStorage.getItem("candidate_id");
-    if (!candidateId) {
+    const token = localStorage.getItem("candidate_token");
+    if (!candidateId || !token) {
       router.push("/candidate/login");
       return;
     }
     setLoading(true);
-    await fetch(`/api/candidates/${candidateId}/submit`, {
+    setError("");
+    const res = await fetch(`/api/candidates/${candidateId}/submit`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ final_solution: finalSolution, ai_usage_note: aiUsageNote })
+      headers: { "Content-Type": "application/json", "x-candidate-token": token },
+      body: JSON.stringify({ final_solution: finalSolution, ai_usage_note: aiUsageNote, candidate_token: token })
     });
+    const data = await res.json();
+    setLoading(false);
+    if (!res.ok) {
+      setError(data.message ?? data.error);
+      return;
+    }
     router.push("/candidate/done");
   }
 
@@ -30,23 +39,19 @@ export default function FinalSubmitPage() {
       <FlowGuide active={5} />
       <section className="panel">
         <h1 className="title">提交最终方案</h1>
-        <p className="subtitle">最终提交后不可修改。请写清楚方案和 AI 使用边界，审核人员会结合过程证据查看。</p>
+        <p className="subtitle">最终提交后系统会调用候选人当前选择的大模型生成最终评分报告。</p>
         <div className="field">
-          <label>final_solution</label>
+          <label>最终方案</label>
           <textarea className="textarea" value={finalSolution} onChange={(event) => setFinalSolution(event.target.value)} />
         </div>
         <div className="field">
-          <label>ai_usage_note</label>
-          <textarea
-            className="textarea"
-            value={aiUsageNote}
-            onChange={(event) => setAiUsageNote(event.target.value)}
-            placeholder="我使用了哪些 AI 工具？采纳、否定和修改了哪些建议？哪些判断是我自己的？"
-          />
+          <label>AI 使用说明</label>
+          <textarea className="textarea" value={aiUsageNote} onChange={(event) => setAiUsageNote(event.target.value)} />
         </div>
         <button className="btn" onClick={submit} disabled={loading || !finalSolution.trim()}>
-          {loading ? "生成评估中..." : "提交并生成 AI 评估"}
+          {loading ? "正在调用模型生成最终评估..." : "提交并生成 AI 评估"}
         </button>
+        {error ? <p className="badge cut">{error}</p> : null}
       </section>
     </div>
   );

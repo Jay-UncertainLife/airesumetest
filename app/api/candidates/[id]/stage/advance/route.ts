@@ -1,76 +1,77 @@
 import { NextResponse } from "next/server";
-import { generateStageOpeningWithDeepSeek } from "@/lib/ai";
+import { generateAbilityPlan, generateStageOpening } from "@/lib/ai";
+import { assertCandidateToken, jsonError, readJson, tokenFromRequest } from "@/lib/apiUtils";
+import { listAgents } from "@/lib/repositories/agents";
+import { addEvent } from "@/lib/repositories/events";
+import { listJobRoles } from "@/lib/repositories/jobRoles";
+import { addMessage } from "@/lib/repositories/messages";
+import { getActiveStage, getNextStage, updateStage } from "@/lib/repositories/stages";
+import { updateCandidate } from "@/lib/repositories/candidates";
 import { stageDurations } from "@/lib/stages";
-import { addEvent, addMessage, now, readStore, writeStore } from "@/lib/store";
 
 export const dynamic = "force-dynamic";
 
-export async function POST(_: Request, { params }: { params: { id: string } }) {
-  const store = await readStore();
-  const candidate = store.candidates.find((item) => item.id === params.id);
-  const current = store.stages.find((item) => item.candidate_id === params.id && item.status === "in_progress");
-  const next = store.stages.find((item) => item.candidate_id === params.id && item.status === "not_started");
-  if (!current || !next) return NextResponse.json({ error: "stage transition unavailable" }, { status: 400 });
+export async function POST(request: Request, { params }: { params: { id: string } }) {
+  try {
+    const body = await readJson<{ candidate_token?: string }>(request);
+    const candidate = await assertCandidateToken(params.id, tokenFromRequest(request, body));
+    const current = await getActiveStage(params.id);
+    const next = await getNextStage(params.id);
+    if (!current || !next) return NextResponse.json({ error: "stage_transition_unavailable" }, { status: 400 });
 
-  const activeAgents = store.agents.filter((agent) => agent.status === "enabled");
-  const pressureAgent = activeAgents.find((agent) => agent.agent_role === "pressure_judge") ?? activeAgents[0];
+    const [agents, jobRoles] = await Promise.all([listAgents(), listJobRoles()]);
+    const jobRole = jobRoles.find((job) => job.name === candidate.target_role) ?? jobRoles[0];
+    if (!jobRole) return NextResponse.json({ error: "job_role_not_configured" }, { status: 400 });
 
-  current.status = "completed";
-  current.completed_at = now();
-  next.status = "in_progress";
-  next.target_duration_seconds = next.target_duration_seconds ?? stageDurations[next.name];
-  next.started_at = now();
-
-  if (candidate && next.name === "能力关卡") {
-    const jobRole = store.jobRoles.find((job) => job.name === candidate.target_role) ?? store.jobRoles[0];
-    if (candidate.ability_plan && jobRole) {
-      candidate.ability_plan.agent_participation = jobRole.ability_participation.map((item) => ({
-        agent_role: "custom",
-        agent_name: item.ai_role,
-        participation_level: item.level,
-        weight: item.level === "P3" ? 30 : item.level === "P2" ? 20 : item.level === "P1" ? 10 : 0,
-        responsibility: item.reason,
-        reason: item.reason
-      }));
+    let abilityPlan = candidate.ability_plan;
+    if (!abilityPlan) {
+      abilityPlan = await generateAbilityPlan({
+        provider: "deepseek",
+        targetRole: candidate.target_role ?? jobRole.name,
+        targetDifficulty: candidate.target_difficulty ?? jobRole.difficulty,
+        personaProfile: candidate.persona_profile,
+        agents,
+        fallbackDimensions: jobRole.ability_dimensions
+      });
+      await updateCandidate(candidate.id, { ability_plan: abilityPlan });
     }
+
+    await updateStage(current.id, { status: "completed", completed_at: new Date().toISOString() });
+    const startedStage = await updateStage(next.id, {
+      status: "in_progress",
+      target_duration_seconds: next.target_duration_seconds ?? stageDurations[next.name],
+      started_at: new Date().toISOString()
+    });
+
+    const opening = await generateStageOpening({
+      provider: candidate.selected_model ?? "deepseek",
+      candidate: { ...candidate, ability_plan: abilityPlan },
+      stage: startedStage,
+      targetRole: candidate.target_role ?? jobRole.name,
+      targetDifficulty: candidate.target_difficulty ?? jobRole.difficulty,
+      abilityDimensions: jobRole.ability_dimensions
+    });
+
+    const agent = agents.find((item) => item.status === "enabled" && item.agent_role === "lead_examiner") ?? agents[0];
+    const message = await addMessage({
+      candidate_id: params.id,
+      stage_id: startedStage.id,
+      role: "ai",
+      ai_role: "examiner",
+      model_provider: candidate.selected_model ?? "deepseek",
+      agent_id: agent?.id,
+      content: opening.question
+    });
+    await addEvent({
+      candidate_id: params.id,
+      stage_id: startedStage.id,
+      event_type: startedStage.name === "能力关卡" ? "pressure_added" : "ai_question",
+      raw_content: message.content,
+      ai_summary: JSON.stringify(opening),
+      risk_tags: startedStage.name === "能力关卡" ? ["时间限制", "工程资源限制", "证据留痕限制"] : []
+    });
+    return NextResponse.json({ stage: startedStage, message });
+  } catch (error) {
+    return jsonError(error, "stage_advance_failed");
   }
-
-  addEvent(store, {
-    candidate_id: params.id,
-    stage_id: next.id,
-    event_type: "stage_started",
-    raw_content: `进入${next.name}`
-  });
-
-  const openingQuestion = candidate
-    ? await generateStageOpeningWithDeepSeek({
-        candidate,
-        stage: next,
-        jobRoleName: candidate.target_role ?? "AI 产品经理",
-        difficulty: candidate.target_difficulty ?? "L2",
-        abilityPlan: candidate.ability_plan
-      })
-    : "";
-
-  const message = addMessage(store, {
-    candidate_id: params.id,
-    stage_id: next.id,
-    role: "ai",
-    ai_role: "examiner",
-    model_provider: candidate?.selected_model ?? "deepseek",
-    agent_id: pressureAgent?.id,
-    content: openingQuestion
-  });
-
-  addEvent(store, {
-    candidate_id: params.id,
-    stage_id: next.id,
-    event_type: next.name === "能力关卡" ? "pressure_added" : "ai_question",
-    raw_content: message.content,
-    ai_summary: next.name === "能力关卡" ? "AI 考核官进入能力关卡并施加约束" : "AI 考核官基于候选人画像和岗位配置生成基础关卡题",
-    risk_tags: next.name === "能力关卡" ? ["时间限制", "人力限制", "技术限制"] : undefined
-  });
-
-  await writeStore(store);
-  return NextResponse.json({ stage: next, message });
 }

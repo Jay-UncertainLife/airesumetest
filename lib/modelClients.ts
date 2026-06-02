@@ -1,6 +1,4 @@
-import { promises as fs } from "fs";
-import path from "path";
-import { ModelProvider } from "./types";
+import { ModelCallResult, ModelProvider } from "./types";
 
 type ChatOptions = {
   provider: ModelProvider;
@@ -9,27 +7,34 @@ type ChatOptions = {
   temperature?: number;
 };
 
-export async function callModel(options: ChatOptions): Promise<string | null> {
-  try {
-    if (options.provider === "openai") return await callOpenAI(options);
-    return await callDeepSeek(options);
-  } catch {
-    return null;
+export class ModelCallError extends Error {
+  provider: ModelProvider;
+
+  constructor(provider: ModelProvider, message: string) {
+    super(message);
+    this.name = "ModelCallError";
+    this.provider = provider;
   }
 }
 
-async function callOpenAI(options: ChatOptions) {
-  const apiKey = await readKey("OPENAI_API_KEY", "chat_key.txt");
-  if (!apiKey) return null;
+export async function callModel(options: ChatOptions): Promise<ModelCallResult> {
+  if (options.provider === "openai") return callOpenAI(options);
+  return callDeepSeek(options);
+}
+
+async function callOpenAI(options: ChatOptions): Promise<ModelCallResult> {
+  const apiKey = process.env.OPENAI_API_KEY;
+  const model = process.env.OPENAI_MODEL ?? "gpt-4o-mini";
+  if (!apiKey) throw new ModelCallError("openai", "OPENAI_API_KEY is not configured.");
+
   const response = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
-    signal: AbortSignal.timeout(8000),
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${apiKey}`
     },
     body: JSON.stringify({
-      model: process.env.OPENAI_MODEL ?? "gpt-4o-mini",
+      model,
       temperature: options.temperature ?? 0.2,
       messages: [
         { role: "system", content: options.system },
@@ -37,23 +42,29 @@ async function callOpenAI(options: ChatOptions) {
       ]
     })
   });
-  if (!response.ok) return null;
+
+  if (!response.ok) {
+    throw new ModelCallError("openai", `OpenAI request failed: ${response.status} ${await response.text()}`);
+  }
   const data = await response.json();
-  return data.choices?.[0]?.message?.content ?? null;
+  const content = data.choices?.[0]?.message?.content;
+  if (!content) throw new ModelCallError("openai", "OpenAI response did not include message content.");
+  return { provider: "openai", model, content };
 }
 
-async function callDeepSeek(options: ChatOptions) {
-  const apiKey = await readKey("DEEPSEEK_API_KEY", "DS-key.txt");
-  if (!apiKey) return null;
+async function callDeepSeek(options: ChatOptions): Promise<ModelCallResult> {
+  const apiKey = process.env.DEEPSEEK_API_KEY;
+  const model = process.env.DEEPSEEK_MODEL ?? "deepseek-chat";
+  if (!apiKey) throw new ModelCallError("deepseek", "DEEPSEEK_API_KEY is not configured.");
+
   const response = await fetch("https://api.deepseek.com/chat/completions", {
     method: "POST",
-    signal: AbortSignal.timeout(8000),
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${apiKey}`
     },
     body: JSON.stringify({
-      model: process.env.DEEPSEEK_MODEL ?? "deepseek-chat",
+      model,
       temperature: options.temperature ?? 0.2,
       messages: [
         { role: "system", content: options.system },
@@ -61,28 +72,18 @@ async function callDeepSeek(options: ChatOptions) {
       ]
     })
   });
-  if (!response.ok) return null;
+
+  if (!response.ok) {
+    throw new ModelCallError("deepseek", `DeepSeek request failed: ${response.status} ${await response.text()}`);
+  }
   const data = await response.json();
-  return data.choices?.[0]?.message?.content ?? null;
+  const content = data.choices?.[0]?.message?.content;
+  if (!content) throw new ModelCallError("deepseek", "DeepSeek response did not include message content.");
+  return { provider: "deepseek", model, content };
 }
 
-async function readKey(envName: string, fileName: string) {
-  if (process.env[envName]) return process.env[envName];
-  try {
-    const raw = await fs.readFile(path.join(process.cwd(), fileName), "utf8");
-    return raw.trim();
-  } catch {
-    return "";
-  }
-}
-
-export function parseJsonObject<T>(text: string | null): T | null {
-  if (!text) return null;
+export function parseJsonObject<T>(text: string): T {
   const match = text.match(/\{[\s\S]*\}/);
-  if (!match) return null;
-  try {
-    return JSON.parse(match[0]) as T;
-  } catch {
-    return null;
-  }
+  if (!match) throw new Error("Model response did not contain a JSON object.");
+  return JSON.parse(match[0]) as T;
 }

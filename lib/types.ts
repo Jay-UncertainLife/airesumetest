@@ -1,10 +1,31 @@
 export type Recommendation = "通过" | "继续观察" | "Cut";
-export type CandidateStatus = "created" | "in_progress" | "submitted" | "evaluated" | "reviewed";
+export type CandidateStatus = "created" | "profiled" | "invited" | "in_progress" | "submitted" | "evaluated" | "reviewed";
 export type StageName = "面试关卡准备" | "基础关卡" | "能力关卡";
 export type StageStatus = "not_started" | "in_progress" | "completed";
 export type ModelProvider = "deepseek" | "openai";
 export type DifficultyLevel = "L1" | "L2" | "L3" | "L4" | "L5";
 export type ParticipationLevel = "P0" | "P1" | "P2" | "P3";
+
+export type PromptName =
+  | "persona-profile.deepseek.md"
+  | "basic-stage-opening.deepseek.md"
+  | "ability-stage-opening.deepseek.md"
+  | "follow-up.deepseek.md"
+  | "follow-up.openai.md"
+  | "turn-score.deepseek.md"
+  | "turn-score.openai.md"
+  | "workspace-reply.deepseek.md"
+  | "workspace-reply.openai.md"
+  | "final-evaluation.deepseek.md"
+  | "final-evaluation.openai.md"
+  | "ability-plan.deepseek.md"
+  | "ability-plan.openai.md";
+
+export type ModelCallResult = {
+  provider: ModelProvider;
+  model: string;
+  content: string;
+};
 
 export type Agent = {
   id: string;
@@ -25,21 +46,56 @@ export type Agent = {
   created_at: string;
 };
 
+export type InterviewerEvaluation = {
+  id?: string;
+  candidate_id?: string;
+  round_no: number;
+  interviewer_name: string;
+  interview_stage: string;
+  evaluation_text: string;
+  recommendation: string;
+  created_at?: string;
+};
+
+export type PersonaProfile = {
+  summary: string;
+  strengths: string[];
+  risks: string[];
+  interview_focus: string[];
+  resume_signals: string[];
+  interviewer_signals: string[];
+  role_fit: string;
+  source_model: ModelProvider;
+};
+
 export type Candidate = {
   id: string;
   name: string;
   target_role?: string;
   target_difficulty?: DifficultyLevel;
+  status: CandidateStatus;
   resume_text?: string;
   resume_file_name?: string;
+  interviewer_evaluations?: InterviewerEvaluation[];
   persona_profile?: PersonaProfile;
+  candidate_token?: string;
+  invite_url?: string;
   selected_model?: ModelProvider;
   ability_plan?: AbilityPlan;
-  status: CandidateStatus;
   final_recommendation?: Recommendation;
   final_solution?: string;
   ai_usage_note?: string;
   created_at: string;
+  updated_at?: string;
+};
+
+export type CandidateInvite = {
+  candidate_id: string;
+  name: string;
+  target_role?: string;
+  target_difficulty?: DifficultyLevel;
+  status: CandidateStatus;
+  whether_ready: boolean;
 };
 
 export type Stage = {
@@ -50,6 +106,7 @@ export type Stage = {
   target_duration_seconds?: number;
   started_at?: string;
   completed_at?: string;
+  created_at?: string;
 };
 
 export type Message = {
@@ -94,22 +151,16 @@ export type Evaluation = {
   recommendation: Recommendation;
   reason_summary: string;
   evidence_summary: string[];
+  reviewer_notes?: string;
   human_review_result?: Recommendation;
   human_review_comment?: string;
+  model_provider: ModelProvider;
   created_at: string;
-};
-
-export type PersonaProfile = {
-  summary: string;
-  strengths: string[];
-  risks: string[];
-  interview_focus: string[];
-  source_model: ModelProvider | "mock";
 };
 
 export type AbilityPlan = {
   role: string;
-  generated_by: ModelProvider | "mock";
+  generated_by: ModelProvider;
   dimensions: AbilityDimension[];
   agent_participation: AgentParticipation[];
   question_strategy: string[];
@@ -166,18 +217,6 @@ export type TurnScore = {
   risk_tags: string[];
   reason_summary: string;
   next_question_standard: string;
-  model_provider: ModelProvider | "mock";
+  model_provider: ModelProvider;
   created_at: string;
-};
-
-export type Store = {
-  candidates: Candidate[];
-  agents: Agent[];
-  stages: Stage[];
-  messages: Message[];
-  workspaceMessages: WorkspaceMessage[];
-  eventLogs: EventLog[];
-  evaluations: Evaluation[];
-  turnScores: TurnScore[];
-  jobRoles: JobRole[];
 };

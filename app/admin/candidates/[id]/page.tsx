@@ -1,206 +1,103 @@
-import { readStore } from "@/lib/store";
-import AbilityPlanView from "@/app/components/AbilityPlanView";
 import BackLink from "@/app/components/BackLink";
 import ReviewActions from "./ReviewActions";
 
 export const dynamic = "force-dynamic";
 
-export default async function CandidateDetailPage({ params }: { params: { id: string } }) {
-  const store = await readStore();
-  const candidate = store.candidates.find((item) => item.id === params.id);
-  if (!candidate) return <div className="container">候选人不存在</div>;
+async function getDetail(id: string) {
+  const baseUrl = process.env.APP_BASE_URL ?? "http://localhost:3000";
+  const res = await fetch(`${baseUrl}/api/admin/candidates/${id}`, { cache: "no-store" });
+  if (!res.ok) return null;
+  return res.json();
+}
 
-  const messages = store.messages.filter((item) => item.candidate_id === params.id);
-  const workspaceMessages = store.workspaceMessages.filter((item) => item.candidate_id === params.id);
-  const events = store.eventLogs.filter((item) => item.candidate_id === params.id);
-  const needsHumanReview = events.some((event) => event.event_type === "human_review_required");
-  const evaluation = store.evaluations.find((item) => item.candidate_id === params.id);
-  const stages = store.stages.filter((item) => item.candidate_id === params.id);
-  const turnScores = store.turnScores.filter((item) => item.candidate_id === params.id);
+export default async function AdminCandidateDetailPage({ params }: { params: { id: string } }) {
+  const data = await getDetail(params.id);
+  if (!data?.candidate) return <div className="container"><BackLink />候选人不存在</div>;
+  const { candidate, stages, messages, workspaceMessages, eventLogs, turnScores, finalEvaluation } = data;
+  const persona = candidate.persona_profile;
 
   return (
     <div className="container">
       <BackLink />
-      <h1 className="title">{candidate.name} 的考核报告</h1>
-      {needsHumanReview ? (
-        <section className="panel cut-panel">
-          <h2>人工复核提示</h2>
-          <p>系统检测到候选人在关卡评分中低于阈值或触发 Cut，需审核员确认最终结果。</p>
-        </section>
-      ) : null}
-      <div className="grid" style={{ gridTemplateColumns: "1fr 1fr", alignItems: "start" }}>
-        <section className="panel">
-          <h2>候选人基本信息</h2>
-          <p>目标角色：{candidate.target_role ?? "-"}</p>
-          <p>当前状态：{candidate.status}</p>
-          <p>最终建议：{candidate.final_recommendation ?? "-"}</p>
-          <p>当前模型：{candidate.selected_model ?? "-"}</p>
-          <p>简历文件：{candidate.resume_file_name ?? "-"}</p>
-          <p>关卡：{stages.map((stage) => `${stage.name}(${stage.status})`).join(" / ")}</p>
-        </section>
+      <h1 className="title">{candidate.name} 的考核档案</h1>
+      <section className="panel">
+        <div className="grid grid-3">
+          <div><strong>目标岗位</strong><p>{candidate.target_role ?? "-"}</p></div>
+          <div><strong>目标难度</strong><p>{candidate.target_difficulty ?? "-"}</p></div>
+          <div><strong>状态</strong><p>{candidate.status}</p></div>
+          <div><strong>简历文件</strong><p>{candidate.resume_file_name ?? "-"}</p></div>
+          <div><strong>面试官评价数量</strong><p>{candidate.interviewer_evaluations?.length ?? 0}</p></div>
+          <div><strong>最终建议</strong><p>{candidate.final_recommendation ?? "-"}</p></div>
+        </div>
+        {candidate.invite_url ? (
+          <p className="badge" style={{ marginTop: 12 }}>专属链接：{candidate.invite_url}</p>
+        ) : null}
+      </section>
 
-        <section className="panel">
-          <h2>AI 初步评分</h2>
-          {evaluation ? (
-            <>
-              <div className="metric">{evaluation.average_score}</div>
-              <p>
-                建议：
-                <span className={`badge ${evaluation.recommendation === "Cut" ? "cut" : evaluation.recommendation === "继续观察" ? "watch" : ""}`}>
-                  {evaluation.recommendation}
-                </span>
-              </p>
-              <p>{evaluation.reason_summary}</p>
-              <div className="actions">
-                {evaluation.risk_tags.map((risk) => (
-                  <span className="badge watch" key={risk}>
-                    {risk}
-                  </span>
-                ))}
-              </div>
-            </>
-          ) : (
-            <p className="muted">候选人尚未提交最终方案。</p>
-          )}
-        </section>
-      </div>
+      <section className="panel" style={{ marginTop: 16 }}>
+        <h2>DeepSeek 人物画像</h2>
+        {persona ? (
+          <>
+            <p>{persona.summary}</p>
+            <p><strong>角色匹配：</strong>{persona.role_fit}</p>
+            <div className="actions">{persona.strengths?.map((item: string) => <span className="badge" key={item}>{item}</span>)}</div>
+            <div className="actions">{persona.risks?.map((item: string) => <span className="badge watch" key={item}>{item}</span>)}</div>
+            <p className="muted">面试重点：{persona.interview_focus?.join("、")}</p>
+          </>
+        ) : <p className="muted">尚未生成画像。</p>}
+      </section>
 
-      <div className="grid" style={{ gridTemplateColumns: "1fr 1fr", alignItems: "start", marginTop: 18 }}>
-        <section className="panel">
-          <h2>DS 人物画像</h2>
-          {candidate.persona_profile ? (
-            <>
-              <p>{candidate.persona_profile.summary}</p>
-              <h3>优势</h3>
-              <div className="actions">{candidate.persona_profile.strengths.map((item) => <span className="badge" key={item}>{item}</span>)}</div>
-              <h3>风险</h3>
-              <div className="actions">{candidate.persona_profile.risks.map((item) => <span className="badge watch" key={item}>{item}</span>)}</div>
-            </>
-          ) : (
-            <p className="muted">尚未生成画像。</p>
-          )}
-        </section>
-        <section className="panel">
-          <h2>动态能力与 Agent 组合</h2>
-          <AbilityPlanView plan={candidate.ability_plan} />
-        </section>
-      </div>
-
-      {evaluation ? (
-        <section className="panel" style={{ marginTop: 18 }}>
-          <h2>五维评分与证据摘要</h2>
-          <table className="table">
-            <tbody>
-              {Object.entries(evaluation.scores).map(([key, value]) => (
-                <tr key={key}>
-                  <th>{key}</th>
-                  <td>{value} 分</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          {evaluation.evidence_summary.map((item) => (
-            <p key={item}>{item}</p>
-          ))}
-          {evaluation.human_review_result ? <p className="badge">人工复核：{evaluation.human_review_result}</p> : null}
-        </section>
-      ) : null}
-
-      <section className="panel" style={{ marginTop: 18 }}>
-        <h2>逐轮维度评分</h2>
+      <section className="panel" style={{ marginTop: 16 }}>
+        <h2>面试官评价</h2>
         <table className="table">
-          <thead>
-            <tr>
-              <th>时间</th>
-              <th>均分</th>
-              <th>建议</th>
-              <th>模型</th>
-              <th>耗时/系数</th>
-              <th>原因与下一问标准</th>
-            </tr>
-          </thead>
-          <tbody>
-            {turnScores.map((score) => (
-              <tr key={score.id}>
-                <td>{new Date(score.created_at).toLocaleString()}</td>
-                <td>{score.average_score}</td>
-                <td>{score.recommendation}</td>
-                <td>{score.model_provider}</td>
-                <td>
-                  {score.elapsed_seconds != null ? `${Math.floor(score.elapsed_seconds / 60)}分${score.elapsed_seconds % 60}秒` : "-"}
-                  <br />
-                  <span className="muted">系数 {score.time_coefficient ?? "-"}</span>
-                </td>
-                <td>
-                  {score.reason_summary}
-                  <br />
-                  <span className="muted">{score.next_question_standard}</span>
-                  <div className="actions">
-                    {Object.entries(score.scores).map(([key, value]) => (
-                      <span className="badge" key={key}>{key}: {value}</span>
-                    ))}
-                  </div>
-                </td>
-              </tr>
-            ))}
-          </tbody>
+          <thead><tr><th>轮次</th><th>面试官</th><th>阶段</th><th>建议</th><th>评价</th></tr></thead>
+          <tbody>{candidate.interviewer_evaluations?.map((item: any) => (
+            <tr key={item.id ?? item.round_no}><td>{item.round_no}</td><td>{item.interviewer_name}</td><td>{item.interview_stage}</td><td>{item.recommendation}</td><td>{item.evaluation_text}</td></tr>
+          ))}</tbody>
         </table>
       </section>
 
-      <div className="grid" style={{ gridTemplateColumns: "1fr 1fr", alignItems: "start", marginTop: 18 }}>
-        <section className="panel">
-          <h2>全部对话记录</h2>
-          <div className="chat">
-            {messages.map((message) => (
-              <div className={`message ${message.role}`} key={message.id}>
-                <strong>{message.role === "ai" ? `AI ${message.ai_role ?? ""}` : "候选人"}</strong>
-                {message.model_provider ? <span className="badge" style={{ marginLeft: 8 }}>{message.model_provider}</span> : null}
-                <br />
-                {message.content}
-              </div>
-            ))}
-          </div>
-        </section>
-        <section className="panel">
-          <h2>候选人 AI 思考工作区留档</h2>
-          <div className="chat">
-            {workspaceMessages.map((message) => (
-              <div className={`message ${message.role === "model" ? "ai" : "candidate"}`} key={message.id}>
-                <strong>{message.role === "model" ? "模型助手" : "候选人"}</strong>
-                <span className="badge" style={{ marginLeft: 8 }}>{message.model_provider}</span>
-                <br />
-                {message.content}
-              </div>
-            ))}
-            {workspaceMessages.length === 0 ? <p className="muted">暂无候选人自用模型对话。</p> : null}
-          </div>
-        </section>
-      </div>
-
-      <div className="grid" style={{ gridTemplateColumns: "1fr", alignItems: "start", marginTop: 18 }}>
-        <section className="panel">
-          <h2>关键事件时间线</h2>
-          <div className="timeline">
-            {events.map((event) => (
-              <div className="event" key={event.id}>
-                <div className="event-type">{event.event_type}</div>
-                <div className="event-content">{new Date(event.created_at).toLocaleString()}</div>
-                <div className="event-content">{event.ai_summary || event.raw_content}</div>
-                {event.risk_tags?.length ? <span className="badge watch">{event.risk_tags.join("、")}</span> : null}
-              </div>
-            ))}
-          </div>
-        </section>
-      </div>
-
-      <section className="panel" style={{ marginTop: 18 }}>
-        <h2>最终方案</h2>
-        <p className="message ai">{candidate.final_solution ?? "尚未提交"}</p>
-        <h2>AI 使用说明</h2>
-        <p className="message ai">{candidate.ai_usage_note ?? "尚未提交"}</p>
+      <section className="panel" style={{ marginTop: 16 }}>
+        <h2>简历文本</h2>
+        <p className="message ai">{candidate.resume_text ?? "未上传"}</p>
       </section>
 
-      {evaluation ? <ReviewActions candidateId={candidate.id} /> : null}
+      <section className="panel" style={{ marginTop: 16 }}>
+        <h2>逐轮评分</h2>
+        <table className="table">
+          <thead><tr><th>时间</th><th>分数</th><th>建议</th><th>模型</th><th>说明</th></tr></thead>
+          <tbody>{turnScores.map((score: any) => (
+            <tr key={score.id}><td>{new Date(score.created_at).toLocaleString()}</td><td>{score.average_score}</td><td>{score.recommendation}</td><td>{score.model_provider}</td><td>{score.reason_summary}</td></tr>
+          ))}</tbody>
+        </table>
+      </section>
+
+      <section className="panel" style={{ marginTop: 16 }}>
+        <h2>正式对话记录</h2>
+        {messages.map((message: any) => <div className={`message ${message.role === "candidate" ? "candidate" : "ai"}`} key={message.id}>{message.content}</div>)}
+      </section>
+
+      <section className="panel" style={{ marginTop: 16 }}>
+        <h2>模型工作区留痕</h2>
+        {workspaceMessages.map((message: any) => <div className={`message ${message.role === "candidate" ? "candidate" : "ai"}`} key={message.id}>{message.model_provider}: {message.content}</div>)}
+      </section>
+
+      <section className="panel" style={{ marginTop: 16 }}>
+        <h2>关键事件</h2>
+        {eventLogs.map((event: any) => <div className="event" key={event.id}><div className="event-type">{event.event_type}</div><div>{event.ai_summary ?? event.raw_content}</div></div>)}
+      </section>
+
+      <section className="panel" style={{ marginTop: 16 }}>
+        <h2>最终评分报告</h2>
+        {finalEvaluation ? (
+          <>
+            <p><strong>{finalEvaluation.average_score} 分 · {finalEvaluation.recommendation}</strong></p>
+            <p>{finalEvaluation.reason_summary}</p>
+            <p className="muted">{finalEvaluation.evidence_summary?.join("；")}</p>
+            <ReviewActions candidateId={candidate.id} />
+          </>
+        ) : <p className="muted">尚未生成最终报告。</p>}
+      </section>
     </div>
   );
 }

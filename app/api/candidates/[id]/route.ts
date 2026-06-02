@@ -1,29 +1,38 @@
 import { NextResponse } from "next/server";
-import { readStore } from "@/lib/store";
+import { assertCandidateToken, jsonError, tokenFromRequest } from "@/lib/apiUtils";
+import { listAgents } from "@/lib/repositories/agents";
+import { getFinalEvaluation, listTurnScores } from "@/lib/repositories/evaluations";
+import { listEvents } from "@/lib/repositories/events";
+import { listMessages, listWorkspaceMessages } from "@/lib/repositories/messages";
+import { listStages } from "@/lib/repositories/stages";
 
 export const dynamic = "force-dynamic";
-export const revalidate = 0;
 
-export async function GET(_: Request, { params }: { params: { id: string } }) {
-  const store = await readStore();
-  const candidate = store.candidates.find((item) => item.id === params.id);
-  if (!candidate) return NextResponse.json({ error: "candidate not found" }, { status: 404 });
-
-  const targetRole = candidate.target_role ?? "AI 产品经理";
-  const enabledAgents = store.agents.filter((item) => item.status === "enabled");
-  const roleAgents = enabledAgents.filter((item) => item.target_role === targetRole);
-
-  return NextResponse.json(
-    {
+export async function GET(request: Request, { params }: { params: { id: string } }) {
+  try {
+    const candidate = await assertCandidateToken(params.id, tokenFromRequest(request));
+    const [stages, messages, workspaceMessages, eventLogs, turnScores, agents, evaluation] = await Promise.all([
+      listStages(params.id),
+      listMessages(params.id),
+      listWorkspaceMessages(params.id),
+      listEvents(params.id),
+      listTurnScores(params.id),
+      listAgents(),
+      getFinalEvaluation(params.id)
+    ]);
+    const enabledAgents = agents.filter((item) => item.status === "enabled");
+    const roleAgents = enabledAgents.filter((item) => item.target_role === candidate.target_role);
+    return NextResponse.json({
       candidate,
-      stages: store.stages.filter((item) => item.candidate_id === params.id),
-      messages: store.messages.filter((item) => item.candidate_id === params.id),
-      workspaceMessages: store.workspaceMessages.filter((item) => item.candidate_id === params.id),
-      eventLogs: store.eventLogs.filter((item) => item.candidate_id === params.id),
-      turnScores: store.turnScores.filter((item) => item.candidate_id === params.id),
+      stages,
+      messages,
+      workspaceMessages,
+      eventLogs,
+      turnScores,
       agents: roleAgents.length ? roleAgents : enabledAgents,
-      evaluation: store.evaluations.find((item) => item.candidate_id === params.id)
-    },
-    { headers: { "Cache-Control": "no-store" } }
-  );
+      evaluation
+    });
+  } catch (error) {
+    return jsonError(error, "candidate_detail_failed");
+  }
 }

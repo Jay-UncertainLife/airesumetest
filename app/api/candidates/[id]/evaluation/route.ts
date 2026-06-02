@@ -1,22 +1,24 @@
 import { NextResponse } from "next/server";
-import { addEvent, readStore, writeStore } from "@/lib/store";
+import { updateCandidate } from "@/lib/repositories/candidates";
+import { addEvent } from "@/lib/repositories/events";
+import { jsonError, readJson } from "@/lib/apiUtils";
+import { Recommendation } from "@/lib/types";
 
-export async function PATCH(request: Request, { params }: { params: { id: string } }) {
-  const { human_review_result, human_review_comment } = await request.json();
-  const store = await readStore();
-  const evaluation = store.evaluations.find((item) => item.candidate_id === params.id);
-  const candidate = store.candidates.find((item) => item.id === params.id);
-  if (!evaluation || !candidate) return NextResponse.json({ error: "evaluation not found" }, { status: 404 });
-  evaluation.human_review_result = human_review_result;
-  evaluation.human_review_comment = human_review_comment;
-  candidate.status = "reviewed";
-  candidate.final_recommendation = human_review_result;
-  addEvent(store, {
-    candidate_id: params.id,
-    event_type: "reviewer_viewed_report",
-    raw_content: `审核人员确认最终结果：${human_review_result}`,
-    ai_summary: human_review_comment
-  });
-  await writeStore(store);
-  return NextResponse.json({ evaluation });
+export async function POST(request: Request, { params }: { params: { id: string } }) {
+  try {
+    const body = await readJson<{ human_review_result: Recommendation; human_review_comment?: string }>(request);
+    const candidate = await updateCandidate(params.id, {
+      status: "reviewed",
+      final_recommendation: body.human_review_result
+    });
+    await addEvent({
+      candidate_id: params.id,
+      event_type: "human_review_completed",
+      raw_content: body.human_review_comment ?? "",
+      ai_summary: `人工复核结果：${body.human_review_result}`
+    });
+    return NextResponse.json({ candidate });
+  } catch (error) {
+    return jsonError(error, "human_review_failed");
+  }
 }
