@@ -9,7 +9,7 @@ export const dynamic = "force-dynamic";
 export default async function AdminDashboardPage() {
   const envStatus = getSupabaseEnvStatus();
 
-  if (!envStatus.hasSupabaseUrl || !envStatus.hasServiceRoleKey) {
+  if (!envStatus.hasSupabaseUrl || !envStatus.isSupabaseUrlValid || !envStatus.hasServiceRoleKey) {
     return (
       <div className="container">
         <BackLink />
@@ -23,6 +23,9 @@ export default async function AdminDashboardPage() {
               <strong>NEXT_PUBLIC_SUPABASE_URL</strong>
               <p className={envStatus.hasSupabaseUrl ? "badge pass" : "badge cut"}>
                 {envStatus.hasSupabaseUrl ? "已读取" : "未读取"}
+              </p>
+              <p className={envStatus.isSupabaseUrlValid ? "badge pass" : "badge cut"}>
+                {envStatus.isSupabaseUrlValid ? "URL 格式有效" : "URL 格式无效"}
               </p>
             </div>
             <div className="card">
