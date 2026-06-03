@@ -61,13 +61,31 @@ export default function CandidateArenaPage() {
   const [assistantLoading, setAssistantLoading] = useState(false);
   const [assistantPos, setAssistantPos] = useState({ x: 24, y: 24 });
   const [error, setError] = useState("");
+  const [nowMs, setNowMs] = useState(Date.now());
+  const [lastLoadedMs, setLastLoadedMs] = useState(Date.now());
   const dragRef = useRef<{ startX: number; startY: number; originX: number; originY: number } | null>(null);
   const lastSavedRef = useRef("");
+  const questionIdRef = useRef<string | null>(null);
 
   const activeStep = data?.stage_key === "ability" ? 4 : data?.stage_key === "final" ? 5 : 3;
   const isBusy = Boolean(loadingAction) || ["GENERATING_FIRST_QUESTION", "GENERATING_NEXT_QUESTION", "SUBMITTING_ANSWER", "SCORING"].includes(data?.activeProgress?.current_state ?? "");
   const canEdit = Boolean(data?.current_question) && !data?.answer && !isBusy && ["ANSWERING", "ANSWERING_OVERTIME"].includes(data?.activeProgress?.current_state ?? "");
   const stageQuestions = useMemo(() => data?.questions.filter((q) => q.stage_key === data.stage_key) ?? [], [data]);
+  const effectiveTiming = useMemo(() => {
+    if (!data) return null;
+    if (!data.current_question || !["ANSWERING", "ANSWERING_OVERTIME"].includes(data.activeProgress?.current_state ?? "")) return data.timing;
+    const deltaSeconds = Math.max(0, Math.floor((nowMs - lastLoadedMs) / 1000));
+    const elapsed = data.timing.elapsed_seconds + deltaSeconds;
+    const target = data.timing.target_duration_seconds;
+    const remaining = target ? target - elapsed : 0;
+    return {
+      ...data.timing,
+      elapsed_seconds: elapsed,
+      remaining_seconds: remaining,
+      is_overtime: target > 0 && elapsed > target,
+      should_auto_submit: target > 0 && elapsed >= target * 2
+    };
+  }, [data, lastLoadedMs, nowMs]);
 
   const session = useCallback(() => {
     const candidateId = localStorage.getItem("candidate_id");
@@ -95,17 +113,20 @@ export default function CandidateArenaPage() {
       setError("后端返回的考核状态结构不完整，请刷新页面重试。");
       return;
     }
-    setData(next);
+    applyStageState(next);
     setModelProvider(next.candidate?.selected_model ?? "deepseek");
-    setAnswer((current) => {
-      if (current && next.current_question?.question_id === data?.current_question?.question_id) return current;
-      return next.draft?.draft_text ?? next.answer?.answer_text ?? "";
-    });
-    setAiUsageNote((current) => {
-      if (current && next.current_question?.question_id === data?.current_question?.question_id) return current;
-      return next.draft?.ai_usage_note_draft ?? next.answer?.ai_usage_note ?? "";
-    });
-  }, [data?.current_question?.question_id, session]);
+  }, [session]);
+
+  function applyStageState(next: StageCurrent) {
+    setData(next);
+    setLastLoadedMs(Date.now());
+    const nextQuestionId = next.current_question?.question_id ?? null;
+    if (nextQuestionId !== questionIdRef.current) {
+      questionIdRef.current = nextQuestionId;
+      setAnswer(next.draft?.draft_text ?? next.answer?.answer_text ?? "");
+      setAiUsageNote(next.draft?.ai_usage_note_draft ?? next.answer?.ai_usage_note ?? "");
+    }
+  }
 
   useEffect(() => {
     const saved = localStorage.getItem("assistant_dock_pos");
@@ -118,6 +139,11 @@ export default function CandidateArenaPage() {
     }
     load();
   }, [load]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     const shouldPoll = isBusy || ["GENERATION_FAILED", "SCORE_FAILED"].includes(data?.activeProgress?.current_state ?? "");
@@ -141,9 +167,9 @@ export default function CandidateArenaPage() {
   }, [answer, aiUsageNote, canEdit, data?.current_question]);
 
   useEffect(() => {
-    if (!canEdit || !data?.timing.should_auto_submit) return;
+    if (!canEdit || !effectiveTiming?.should_auto_submit) return;
     void submitAnswer("auto_timeout");
-  }, [canEdit, data?.timing.should_auto_submit]);
+  }, [canEdit, effectiveTiming?.should_auto_submit]);
 
   async function post(path: string, body: Record<string, unknown>, reload = true) {
     const auth = session();
@@ -160,7 +186,10 @@ export default function CandidateArenaPage() {
     });
     const json = await res.json();
     if (!res.ok) throw new Error(json.message ?? json.error ?? "请求失败");
-    if (reload) await load();
+    if (reload) {
+      if (isStageCurrent(json)) applyStageState(json);
+      else await load();
+    }
     return json;
   }
 
@@ -176,7 +205,14 @@ export default function CandidateArenaPage() {
     setLoadingAction(action);
     setError("");
     try {
-      if (action === "start_first_question") await post("/api/candidate/stage/start-first-question", {});
+      if (action === "start_first_question") {
+        setData((current) => current ? {
+          ...current,
+          activeProgress: current.activeProgress ? { ...current.activeProgress, current_state: "GENERATING_FIRST_QUESTION" } : current.activeProgress,
+          button: { label: "AI 正在生成题目，请稍候", action: "wait", disabled: true }
+        } : current);
+        await post("/api/candidate/stage/start-first-question", {});
+      }
       if (action === "score_answer") await post("/api/candidate/stage/score-answer", {});
       if (action === "next_question") await post("/api/candidate/stage/next-question", {});
     } catch (err) {
@@ -253,7 +289,7 @@ export default function CandidateArenaPage() {
           <h1 className="title">{data.stage_name}</h1>
           <p className="subtitle">{stageGoal[data.stage_key]}</p>
         </div>
-        <TimerBadge timing={data.timing} />
+        <TimerBadge timing={effectiveTiming ?? data.timing} />
       </header>
 
       {error ? <p className="badge cut">{error}</p> : null}
@@ -295,7 +331,12 @@ export default function CandidateArenaPage() {
           <button
             className="btn stage-primary-action"
             disabled={Boolean(loadingAction) || data.button.disabled || (data.button.action === "submit_answer" && !answer.trim())}
-            onClick={() => data.button.action === "submit_answer" ? submitAnswer("manual") : runAction(data.button.action)}
+            onClick={() => {
+              const state = data.activeProgress?.current_state;
+              if (data.button.action === "submit_answer") void submitAnswer("manual");
+              else if (state === "INIT" || state === "GENERATION_FAILED") void runAction("start_first_question");
+              else void runAction(data.button.action);
+            }}
           >
             {loadingAction === "auto_submit" ? "已超时，系统正在自动提交" : loadingAction ? busyLabel(loadingAction) : data.button.label}
           </button>
