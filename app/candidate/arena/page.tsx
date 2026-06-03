@@ -30,7 +30,10 @@ export default function CandidateArenaPage() {
   const [statusMessage, setStatusMessage] = useState("");
   const [nowMs, setNowMs] = useState(Date.now());
 
-  const currentStage = useMemo(() => data?.stages.find((stage) => stage.status === "in_progress"), [data]);
+  const currentStage = useMemo(() => {
+    const activeStages = data?.stages.filter((stage) => stage.status === "in_progress") ?? [];
+    return activeStages.sort((a, b) => stageRank(b.name) - stageRank(a.name))[0];
+  }, [data]);
 
   const auth = useCallback(() => {
     const candidateId = localStorage.getItem("candidate_id");
@@ -180,7 +183,7 @@ export default function CandidateArenaPage() {
   if (!data || !currentStage) return <div className="container">加载考核现场...</div>;
 
   const stageMessages = data.messages.filter((message) => message.stage_id === currentStage.id);
-  const workspaceMessages = data.workspaceMessages.filter((message) => !message.stage_id || message.stage_id === currentStage.id);
+  const workspaceMessages = data.workspaceMessages;
   const hasNextStage = data.stages.some((stage) => stage.status === "not_started");
   const isPrepStage = currentStage.name === "面试关卡准备";
   const activeStep = isPrepStage ? 2 : currentStage.name === "基础关卡" ? 3 : 4;
@@ -345,4 +348,10 @@ function formatDuration(seconds: number) {
   const mins = Math.floor(seconds / 60);
   const secs = seconds % 60;
   return `${mins}:${String(secs).padStart(2, "0")}`;
+}
+
+function stageRank(name: string) {
+  if (name.includes("能力")) return 3;
+  if (name.includes("基础")) return 2;
+  return 1;
 }

@@ -6,7 +6,7 @@ import { updateCandidate } from "@/lib/repositories/candidates";
 import { addEvent } from "@/lib/repositories/events";
 import { listJobRoles } from "@/lib/repositories/jobRoles";
 import { addMessage, listMessages } from "@/lib/repositories/messages";
-import { createStage, getActiveStage, getNextStage, listStages, resetStages, updateStage } from "@/lib/repositories/stages";
+import { completeOtherActiveStages, createStage, getActiveStage, getNextStage, listStages, resetStages, updateStage } from "@/lib/repositories/stages";
 import { stageDurations } from "@/lib/stages";
 import { Candidate, Stage, StageName } from "@/lib/types";
 
@@ -63,7 +63,7 @@ export async function POST(request: Request, { params }: { params: { id: string 
     const targetStage = await resolveTargetStage(params.id, current);
     const existingQuestion = await findExistingQuestion(params.id, targetStage.id);
     if (existingQuestion) {
-      const startedStage = await activateTargetStage(current, targetStage);
+      const startedStage = await activateTargetStage(params.id, current, targetStage);
       return NextResponse.json({ stage: startedStage, message: existingQuestion, existing: true });
     }
 
@@ -76,7 +76,7 @@ export async function POST(request: Request, { params }: { params: { id: string 
       selectedModel: candidate.selected_model ?? "deepseek"
     });
 
-    const startedStage = await activateTargetStage(current, targetStage);
+    const startedStage = await activateTargetStage(params.id, current, targetStage);
     return NextResponse.json({ stage: startedStage, message, existing: false });
   } catch (error) {
     return jsonError(error, "stage_advance_failed");
@@ -92,10 +92,11 @@ async function resolveTargetStage(candidateId: string, current: Stage) {
   return current;
 }
 
-async function activateTargetStage(current: Stage, target: Stage) {
+async function activateTargetStage(candidateId: string, current: Stage, target: Stage) {
   if (current.id !== target.id && current.status === "in_progress") {
     await updateStage(current.id, { status: "completed", completed_at: new Date().toISOString() });
   }
+  await completeOtherActiveStages(candidateId, target.id);
   if (target.status !== "in_progress") {
     return updateStage(target.id, {
       status: "in_progress",
