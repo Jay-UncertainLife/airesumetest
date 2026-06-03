@@ -297,11 +297,17 @@ select {
   border-radius: 8px;
   bottom: 84px;
   box-shadow: 0 16px 40px rgba(23, 32, 27, 0.18);
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 12px;
+  height: min(460px, calc(100vh - 120px));
   max-height: calc(100vh - 120px);
+  min-height: 320px;
+  min-width: 340px;
+  overflow: auto;
   padding: 16px;
   position: fixed;
+  resize: both;
   right: 24px;
   width: min(420px, calc(100vw - 32px));
   z-index: 30;
@@ -313,9 +319,12 @@ select {
 
 .assistant-head {
   align-items: center;
+  cursor: move;
+  flex: 0 0 auto;
   display: flex;
   justify-content: space-between;
   gap: 12px;
+  user-select: none;
 }
 
 .assistant-head .btn {
@@ -324,7 +333,9 @@ select {
 }
 
 .assistant-chat {
-  max-height: 42vh;
+  flex: 1 1 auto;
+  min-height: 72px;
+  overflow: auto;
 }
 
 .stage-review-list {
@@ -462,7 +473,7 @@ select {
   position: fixed;
   right: 0;
   top: 0;
-  z-index: 20;
+  z-index: 60;
 }
 
 .modal {
@@ -659,6 +670,17 @@ select {
 .session-card.risk {
   background: #fff1f0;
   border-color: #ffccc7;
+}
+
+.compact-session {
+  display: grid;
+  gap: 8px;
+}
+
+.compact-session-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 
 .review-tabs {

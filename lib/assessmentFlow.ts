@@ -270,10 +270,14 @@ export async function scoreCurrentAnswer(candidate: Candidate, provider: ModelPr
       elapsedSeconds: answer.actual_duration_seconds ?? 0,
       timeCoefficient: Number(answer.time_factor ?? 1)
     });
-    const contentScore = Number(scoreDraft.average_score || 0);
-    const finalScore = Number((contentScore * Number(answer.time_factor ?? 1)).toFixed(1));
-    const scoreStatus = scoreStatusFromScore(finalScore, answer);
-    const needsManualReview = finalScore < 80 || scoreStatus === "score_manual_review";
+    const ruleDecision = decideTestScore(answer.answer_text ?? "", Number(progress.current_question_index ?? 1));
+    const contentScore = ruleDecision.contentScore;
+    const finalScore = ruleDecision.finalScore;
+    const scoreStatus = ruleDecision.scoreStatus;
+    const needsManualReview = ruleDecision.nextAction === "manual_review";
+    const needsFollowUp = ruleDecision.nextAction === "follow_up";
+    const modelReason = scoreDraft.reason_summary ? `模型摘要：${scoreDraft.reason_summary}` : "";
+    const reasonSummary = [ruleDecision.reason, modelReason].filter(Boolean).join("\n");
     const savedScore = await addAssessmentTurnScore({
       candidate_id: candidate.id,
       stage_key: progress.stage_key,
@@ -291,10 +295,10 @@ export async function scoreCurrentAnswer(candidate: Candidate, provider: ModelPr
       recommendation: scoreDraft.recommendation,
       risk_tags: scoreDraft.risk_tags,
       risk_flags: scoreDraft.risk_tags,
-      reason_summary: scoreDraft.reason_summary,
-      evidence_summary: [scoreDraft.reason_summary],
-      need_follow_up: false,
-      next_action: needsManualReview ? "manual_review" : progress.stage_key === "basic" ? "ability_stage" : "final_stage",
+      reason_summary: reasonSummary,
+      evidence_summary: [ruleDecision.reason, scoreDraft.reason_summary].filter(Boolean),
+      need_follow_up: needsFollowUp,
+      next_action: needsManualReview ? "manual_review" : needsFollowUp ? "follow_up" : progress.stage_key === "basic" ? "ability_stage" : "final_stage",
       next_question_standard: scoreDraft.next_question_standard,
       model_provider: provider,
       model_name: provider === "openai" ? process.env.OPENAI_MODEL ?? "gpt-4o-mini" : process.env.DEEPSEEK_MODEL ?? "deepseek-chat",
@@ -308,7 +312,9 @@ export async function scoreCurrentAnswer(candidate: Candidate, provider: ModelPr
     const scoredCount = (await listAssessmentScores(candidate.id, progress.stage_key)).length;
     const nextState: AssessmentState = needsManualReview
       ? "MANUAL_REVIEW_REQUIRED"
-      : progress.stage_key === "basic"
+      : needsFollowUp
+        ? "WAITING_NEXT_ACTION"
+        : progress.stage_key === "basic"
         ? "BASIC_STAGE_COMPLETED"
         : progress.stage_key === "ability"
           ? "ABILITY_STAGE_COMPLETED"
@@ -329,11 +335,11 @@ export async function scoreCurrentAnswer(candidate: Candidate, provider: ModelPr
       question_id: question.question_id,
       session_id: session.session_id,
       event_type: needsManualReview ? "manual_review_required" : "scoring_success",
-      event_payload: { finalScore, scoreStatus, scoredCount },
-      ai_summary: scoreDraft.reason_summary,
+      event_payload: { finalScore, scoreStatus, scoredCount, nextAction: ruleDecision.nextAction, answerLength: ruleDecision.answerLength },
+      ai_summary: reasonSummary,
       risk_tags: scoreDraft.risk_tags
     });
-    if (!needsManualReview && progress.stage_key === "basic") {
+    if (!needsManualReview && !needsFollowUp && progress.stage_key === "basic") {
       await ensureStageProgress({ candidate_id: candidate.id, stage_key: "ability", current_state: "INIT", target_duration_seconds: STAGE_TARGET_SECONDS.ability });
       await addAssessmentEvent({
         candidate_id: candidate.id,
@@ -343,14 +349,23 @@ export async function scoreCurrentAnswer(candidate: Candidate, provider: ModelPr
         event_payload: { from: "basic", previous_score: finalScore }
       });
     }
-    if (!needsManualReview && progress.stage_key === "ability") {
-      await ensureStageProgress({ candidate_id: candidate.id, stage_key: "final", current_state: "INIT", target_duration_seconds: STAGE_TARGET_SECONDS.final });
+    if (!needsManualReview && !needsFollowUp && progress.stage_key === "ability") {
+      const finalProgress = await ensureStageProgress({ candidate_id: candidate.id, stage_key: "final", current_state: "INIT", target_duration_seconds: STAGE_TARGET_SECONDS.final });
+      await updateStageProgress(finalProgress.id, {
+        current_state: "FINAL_EVALUATION_COMPLETED",
+        score_status: "score_success",
+        dimension_progress_json: { synced_from_stage: "ability", synced_answer_id: answer.answer_id }
+      });
+      await updateCandidate(candidate.id, {
+        final_solution: answer.answer_text ?? "",
+        status: "assessment_completed"
+      });
       await addAssessmentEvent({
         candidate_id: candidate.id,
         stage_key: "final",
-        event_type: "stage_entered",
+        event_type: "stage_completed",
         event_source: "system",
-        event_payload: { from: "ability", previous_score: finalScore }
+        event_payload: { from: "ability", previous_score: finalScore, synced_answer_id: answer.answer_id }
       });
     }
     return getAssessmentCurrent(candidate);
@@ -384,7 +399,7 @@ export async function nextQuestion(candidate: Candidate, provider: ModelProvider
     await ensureStageProgress({ candidate_id: candidate.id, stage_key: "final", current_state: "INIT", target_duration_seconds: STAGE_TARGET_SECONDS.final });
     return getAssessmentCurrent(candidate);
   }
-  if (current.latestScore?.score_status === "score_manual_review" || Number(current.latestScore?.average_score ?? 100) < 80) {
+  if (current.latestScore?.score_status === "score_manual_review") {
     await updateStageProgress(progress.id, {
       current_state: "MANUAL_REVIEW_REQUIRED",
       active_question_id: current.current_question?.question_id ?? progress.active_question_id,
@@ -647,10 +662,10 @@ function buildButton(progress: any, question: any, answer: any, score: any) {
   if (progress.current_state === "SUBMITTING_ANSWER" || progress.current_state === "SCORING" || (answer && !score)) {
     return { label: "AI 正在评分，请稍候", action: "score_answer", disabled: false };
   }
-  if (progress.current_state === "MANUAL_REVIEW_REQUIRED" || Number(score?.average_score ?? 100) < 80 || score?.score_status === "score_manual_review") {
+  if (progress.current_state === "MANUAL_REVIEW_REQUIRED" || score?.score_status === "score_manual_review") {
     return { label: "你的回答不通过，等待人工复核", action: "wait", disabled: true };
   }
-  if (progress.current_state === "WAITING_NEXT_ACTION") return { label: "进入下一题", action: "next_question", disabled: false };
+  if (progress.current_state === "WAITING_NEXT_ACTION") return { label: "进入追问题", action: "next_question", disabled: false };
   if (progress.current_state === "BASIC_STAGE_COMPLETED") return { label: "进入能力关卡", action: "next_question", disabled: false };
   if (progress.current_state === "ABILITY_STAGE_COMPLETED") return { label: "提交最终方案", action: "final_submit", disabled: false };
   if (progress.current_state === "FINAL_EVALUATION_COMPLETED" || progress.current_state === "COMPLETED") {
@@ -680,12 +695,53 @@ function fakeStage(stageKey: AssessmentStageKey): Stage {
   };
 }
 
-function scoreStatusFromScore(finalScore: number, answer: { answer_text?: string | null; time_factor?: number | null }) {
-  if (!answer.answer_text?.trim() || Number(answer.time_factor ?? 1) === 0) return "score_manual_review";
-  if (finalScore >= 80) return "score_passed";
-  if (finalScore >= 60) return "score_warning";
-  if (finalScore >= 40) return "score_risk";
-  return "score_manual_review";
+function decideTestScore(answerText: string, questionIndex: number): {
+  answerLength: number;
+  contentScore: number;
+  finalScore: number;
+  scoreStatus: string;
+  nextAction: "manual_review" | "follow_up" | "pass";
+  reason: string;
+} {
+  const answerLength = Array.from(answerText.replace(/\s/g, "")).length;
+  if (answerLength < 10) {
+    return {
+      answerLength,
+      contentScore: 20,
+      finalScore: 20,
+      scoreStatus: "score_manual_review",
+      nextAction: "manual_review",
+      reason: `测试评分规则：正式回答有效字符数 ${answerLength}，低于 10，直接进入人工复核。`
+    };
+  }
+  if (answerLength < 30 && questionIndex < 3) {
+    return {
+      answerLength,
+      contentScore: 68,
+      finalScore: 68,
+      scoreStatus: "score_warning",
+      nextAction: "follow_up",
+      reason: `测试评分规则：正式回答有效字符数 ${answerLength}，介于 10 到 30，进入追问。`
+    };
+  }
+  if (answerLength < 30) {
+    return {
+      answerLength,
+      contentScore: 82,
+      finalScore: 82,
+      scoreStatus: "score_passed",
+      nextAction: "pass",
+      reason: `测试评分规则：已完成最多两次追问，正式回答有效字符数 ${answerLength}，本轮按通过处理。`
+    };
+  }
+  return {
+    answerLength,
+    contentScore: 92,
+    finalScore: 92,
+    scoreStatus: "score_passed",
+    nextAction: "pass",
+    reason: `测试评分规则：正式回答有效字符数 ${answerLength}，达到 30 以上，直接通过。`
+  };
 }
 
 function renderSessionText(question: string, answer: string, aiUsageNote: string) {

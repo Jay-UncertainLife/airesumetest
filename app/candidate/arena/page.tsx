@@ -28,7 +28,7 @@ type StageCurrent = {
   draft?: { draft_text?: string; ai_usage_note_draft?: string } | null;
   answer?: { answer_text?: string; ai_usage_note?: string } | null;
   latestScore?: { average_score?: number; score_status?: string; reason_summary?: string; risk_tags?: string[] } | null;
-  questions: Array<{ question_id: string; stage_key: string; question_text: string; created_at: string; status: string }>;
+  questions: Array<{ question_id: string; stage_key: string; question_text: string; question_type?: string; created_at: string; status: string }>;
   answers: Array<{ answer_id: string; question_id: string; answer_text?: string; ai_usage_note?: string; submitted_at: string }>;
   scores: Array<{ id: string; question_id?: string; average_score?: number; score_status?: string; reason_summary?: string; created_at: string }>;
   chatMessages: Array<{ message_id: string; role: "candidate" | "model"; content: string; created_at: string }>;
@@ -60,10 +60,12 @@ export default function CandidateArenaPage() {
   const [assistantLoading, setAssistantLoading] = useState(false);
   const [stageNotice, setStageNotice] = useState("");
   const [assistantPos, setAssistantPos] = useState({ x: 24, y: 24 });
+  const [assistantSize, setAssistantSize] = useState({ width: 420, height: 460 });
   const [error, setError] = useState("");
   const [nowMs, setNowMs] = useState(Date.now());
   const [lastLoadedMs, setLastLoadedMs] = useState(Date.now());
   const dragRef = useRef<{ startX: number; startY: number; originX: number; originY: number } | null>(null);
+  const assistantRef = useRef<HTMLElement | null>(null);
   const lastSavedRef = useRef("");
   const questionIdRef = useRef<string | null>(null);
 
@@ -73,8 +75,7 @@ export default function CandidateArenaPage() {
   const stageQuestions = useMemo(() => data?.questions.filter((q) => q.stage_key === data.stage_key) ?? [], [data]);
   const manualReviewRequired =
     data?.activeProgress?.current_state === "MANUAL_REVIEW_REQUIRED" ||
-    data?.latestScore?.score_status === "score_manual_review" ||
-    Number(data?.latestScore?.average_score ?? 100) < 80;
+    data?.latestScore?.score_status === "score_manual_review";
   const effectiveTiming = useMemo(() => {
     if (!data) return null;
     if (!data.current_question || !["ANSWERING", "ANSWERING_OVERTIME"].includes(data.activeProgress?.current_state ?? "")) return data.timing;
@@ -138,6 +139,18 @@ export default function CandidateArenaPage() {
     if (saved) {
       try {
         setAssistantPos(JSON.parse(saved));
+      } catch {
+        // ignore stale layout data
+      }
+    }
+    const savedSize = localStorage.getItem("assistant_dock_size");
+    if (savedSize) {
+      try {
+        const next = JSON.parse(savedSize) as { width?: number; height?: number };
+        setAssistantSize({
+          width: clampNumber(next.width, 340, 760, 420),
+          height: clampNumber(next.height, 320, 760, 460)
+        });
       } catch {
         // ignore stale layout data
       }
@@ -284,6 +297,18 @@ export default function CandidateArenaPage() {
 
   function endDrag() {
     dragRef.current = null;
+    saveAssistantLayout();
+  }
+
+  function saveAssistantLayout() {
+    const rect = assistantRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const next = {
+      width: clampNumber(Math.round(rect.width), 340, Math.max(360, window.innerWidth - 32), 420),
+      height: clampNumber(Math.round(rect.height), 320, Math.max(360, window.innerHeight - 32), 460)
+    };
+    setAssistantSize(next);
+    localStorage.setItem("assistant_dock_size", JSON.stringify(next));
   }
 
   if (!data) return <div className="container">正在恢复考核状态...</div>;
@@ -363,12 +388,15 @@ export default function CandidateArenaPage() {
           {stageQuestions.length ? stageQuestions.map((question, index) => {
             const score = data.scores.find((item) => item.question_id === question.question_id);
             const answerRecord = data.answers.find((item) => item.question_id === question.question_id);
+            const label = question.question_type === "followup" || index > 0 ? `追问题${index}` : "第一题";
             return (
-              <article className={`session-card ${Number(score?.average_score ?? 100) < 60 ? "risk" : ""}`} key={question.question_id}>
-                <strong>题目 {index + 1}</strong>
-                <p>{question.question_text}</p>
-                {answerRecord ? <p className="muted">已提交：{answerRecord.answer_text?.slice(0, 90)}</p> : <p className="muted">等待作答</p>}
-                {score ? <span className="badge">{score.average_score} / {score.score_status}</span> : null}
+              <article className={`session-card compact-session ${Number(score?.average_score ?? 100) < 60 ? "risk" : ""}`} key={question.question_id}>
+                <strong>{label}</strong>
+                <div className="compact-session-tags">
+                  {answerRecord ? <span className="badge">已提交</span> : <span className="badge">待作答</span>}
+                  {score ? <span className="badge">{label}得分 {score.average_score}</span> : null}
+                  {score?.score_status ? <span className="badge">{scoreStatusLabel(score.score_status)}</span> : null}
+                </div>
               </article>
             );
           }) : <p className="muted">尚未生成题目。</p>}
@@ -377,7 +405,12 @@ export default function CandidateArenaPage() {
 
       <button className="assistant-launcher" onClick={() => setAssistantOpen(true)}>AI 小助手</button>
       {assistantOpen ? (
-        <section className="assistant-dock floating-assistant" style={{ right: assistantPos.x, bottom: assistantPos.y }}>
+        <section
+          className="assistant-dock floating-assistant"
+          ref={assistantRef}
+          style={{ right: assistantPos.x, bottom: assistantPos.y, width: assistantSize.width, height: assistantSize.height }}
+          onMouseUp={saveAssistantLayout}
+        >
           <div className="assistant-head" onPointerDown={startDrag} onPointerMove={moveDrag} onPointerUp={endDrag}>
             <strong>辅助 AI 对话</strong>
             <button className="icon-button" onClick={() => setAssistantOpen(false)} type="button">×</button>
@@ -439,6 +472,23 @@ function busyLabel(action: string) {
   if (action === "submit_answer") return "正在提交回答";
   if (action === "score_answer") return "AI 正在评分，请稍候";
   return "处理中";
+}
+
+function scoreStatusLabel(status: string) {
+  const labels: Record<string, string> = {
+    score_passed: "已通过",
+    score_warning: "需追问",
+    score_risk: "需追问",
+    score_manual_review: "人工复核",
+    score_failed: "评分失败",
+    score_success: "已评分"
+  };
+  return labels[status] ?? status;
+}
+
+function clampNumber(value: number | undefined, min: number, max: number, fallback: number) {
+  if (!value || Number.isNaN(value)) return fallback;
+  return Math.min(max, Math.max(min, value));
 }
 
 function isStageCurrent(value: unknown): value is StageCurrent {
