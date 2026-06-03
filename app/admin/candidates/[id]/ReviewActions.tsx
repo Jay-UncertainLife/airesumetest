@@ -8,15 +8,23 @@ export default function ReviewActions({ candidateId }: { candidateId: string }) 
   const router = useRouter();
   const [comment, setComment] = useState("");
   const [loading, setLoading] = useState(false);
+  const [message, setMessage] = useState("");
 
   async function review(result: Recommendation) {
     setLoading(true);
-    await fetch(`/api/candidates/${candidateId}/evaluation`, {
+    setMessage("");
+    const res = await fetch(`/api/candidates/${candidateId}/evaluation`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ human_review_result: result, human_review_comment: comment })
     });
     setLoading(false);
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      setMessage(data.message ?? data.error ?? "复核提交失败，请重试。");
+      return;
+    }
+    setMessage(`已提交复核结果：${result}`);
     router.refresh();
   }
 
@@ -38,6 +46,7 @@ export default function ReviewActions({ candidateId }: { candidateId: string }) 
           确认 Cut
         </button>
       </div>
+      {message ? <p className="badge">{message}</p> : null}
     </div>
   );
 }

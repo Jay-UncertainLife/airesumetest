@@ -358,7 +358,8 @@ export async function scoreCurrentAnswer(candidate: Candidate, provider: ModelPr
       });
       await updateCandidate(candidate.id, {
         final_solution: answer.answer_text ?? "",
-        status: "assessment_completed"
+        status: "assessment_completed",
+        final_recommendation: "通过"
       });
       await addAssessmentEvent({
         candidate_id: candidate.id,

@@ -15,6 +15,12 @@ export default async function AdminCandidateDetailPage({ params }: { params: { i
   ]);
   const candidate = overview.candidate;
   const persona = overview.originalProfile;
+  const matchStatus = overview.needsManualReview
+    ? "待人工复核"
+    : overview.currentState
+      ? `${overview.currentStage} / ${stateLabel(overview.currentState)}`
+      : statusLabel(candidate.status);
+  const passStatus = candidate.final_recommendation ?? (candidate.status === "assessment_completed" ? "通过" : overview.needsManualReview ? "待人工复核" : "待复核");
 
   return (
     <div className="container admin-review-page">
@@ -25,12 +31,12 @@ export default async function AdminCandidateDetailPage({ params }: { params: { i
         <div className="grid grid-4">
           <Info label="目标岗位" value={candidate.target_role ?? "-"} />
           <Info label="目标难度" value={candidate.target_difficulty ?? "-"} />
-          <Info label="当前阶段" value={`${overview.currentStage} / ${overview.currentState ?? "-"}`} />
-          <Info label="总状态" value={candidate.status} />
+          <Info label="磨合状态" value={matchStatus} />
+          <Info label="主表状态" value={statusLabel(candidate.status)} />
           <Info label="高风险" value={overview.hasHighRisk ? "是" : "否"} />
           <Info label="人工复核" value={overview.needsManualReview ? "需要" : "暂无"} />
           <Info label="面试评价数" value={String(candidate.interviewer_evaluations?.length ?? 0)} />
-          <Info label="最终建议" value={candidate.final_recommendation ?? "-"} />
+          <Info label="通过状态" value={passStatus} />
         </div>
         {candidate.invite_url ? <p className="badge" style={{ marginTop: 12 }}>专属链接：{candidate.invite_url}</p> : null}
       </section>
@@ -132,4 +138,40 @@ function StagePanel({ title, detail, embedded = false }: { title: string; detail
 
 function Info({ label, value }: { label: string; value: string }) {
   return <div><strong>{label}</strong><p>{value}</p></div>;
+}
+
+function statusLabel(status: string) {
+  const labels: Record<string, string> = {
+    created: "已建档",
+    profiled: "画像已生成",
+    invited: "已发链接",
+    in_progress: "磨合中",
+    assessment_started: "磨合中",
+    submitted: "已提交",
+    evaluated: "已评分",
+    reviewed: "已复核",
+    assessment_completed: "磨合完成"
+  };
+  return labels[status] ?? status;
+}
+
+function stateLabel(state: string) {
+  const labels: Record<string, string> = {
+    INIT: "待开始",
+    GENERATING_FIRST_QUESTION: "生成题目中",
+    GENERATING_NEXT_QUESTION: "生成追问题中",
+    ANSWERING: "作答中",
+    ANSWERING_OVERTIME: "超时作答中",
+    SUBMITTING_ANSWER: "提交中",
+    SCORING: "评分中",
+    WAITING_NEXT_ACTION: "等待追问",
+    MANUAL_REVIEW_REQUIRED: "待人工复核",
+    BASIC_STAGE_COMPLETED: "基础完成",
+    ABILITY_STAGE_COMPLETED: "能力完成",
+    FINAL_EVALUATION_COMPLETED: "最终评价完成",
+    COMPLETED: "已结束",
+    SCORE_FAILED: "评分失败",
+    GENERATION_FAILED: "生成失败"
+  };
+  return labels[state] ?? state;
 }
