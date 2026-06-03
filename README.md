@@ -1,37 +1,102 @@
 # AI Cut Arena
 
-AI Cut Arena 是一个面向招聘场景的 AI 产品经理考核 MVP。当前版本采用“审核员建档 -> DeepSeek 画像 -> 生成候选人专属链接 -> 候选人闯关 -> DeepSeek/OpenAI 追问评分 -> 审核员复核”的闭环。
+AI Cut Arena 是一个面向 AI 产品经理岗位的 AI 闯关考核 MVP。
+
+当前版本采用小闭环流程：
+
+1. 审核员创建候选人档案，上传简历并填写多轮面试评价。
+2. 后端调用 DeepSeek 生成人物画像。
+3. 系统生成候选人专属链接。
+4. 候选人通过专属链接进入面试准备、基础关卡和能力关卡。
+5. 基础关卡和能力关卡由 DeepSeek/OpenAI 根据候选人画像、岗位难度、能力维度和 Agent 参与策略动态生成题目。
+6. 候选人可在模型交互工作区调用 DeepSeek/OpenAI 辅助思考，过程会留痕。
+7. 每轮正式回答会调用模型评分、生成追问，并记录关键事件。
+8. 审核员查看候选人全过程证据、评分和最终报告。
 
 ## 技术栈
 
 - Next.js 14 App Router
 - React 18 + TypeScript
 - Supabase Postgres
-- DeepSeek / OpenAI Chat Completions API
-- `mammoth` 解析 DOCX，`pdfjs-dist` 解析 PDF
+- DeepSeek Chat Completions API
+- OpenAI Chat Completions API
+- `mammoth` 解析 DOCX
+- `pdfjs-dist` 解析 PDF
 
-## 本地运行
-
-```bash
-npm install
-npm run dev
-```
-
-本地访问：
+## 项目结构
 
 ```text
-http://localhost:3000
+.
+├─ app/
+│  ├─ admin/                 # 审核员页面
+│  ├─ candidate/             # 候选人页面
+│  ├─ api/                   # Next.js 后端 API Routes
+│  ├─ components/            # 共享 UI 组件
+│  ├─ AppHeader.tsx
+│  ├─ globals.css
+│  ├─ layout.tsx
+│  └─ page.tsx
+├─ lib/
+│  ├─ repositories/          # Supabase 数据访问层
+│  ├─ supabase/              # Supabase server client
+│  ├─ ai.ts                  # 业务级 AI 调用封装
+│  ├─ apiUtils.ts            # API 错误与 token 校验
+│  ├─ jobConfig.ts           # 岗位默认配置
+│  ├─ modelClients.ts        # DeepSeek/OpenAI 底层调用
+│  ├─ prompts.ts             # Prompt 文件读取和变量替换
+│  ├─ stages.ts              # 关卡定义、计时规则
+│  └─ types.ts               # 业务类型
+├─ prompts/                  # 独立 Prompt 文件
+├─ supabase/
+│  └─ schema.sql             # 数据库建表和初始 Agent/岗位配置
+├─ types/
+├─ .env.example
+├─ .gitignore
+├─ next.config.mjs
+├─ package.json
+└─ tsconfig.json
 ```
 
-本地构建：
+## 关键后端接口
 
-```bash
-npm run build
+```text
+POST /api/admin/candidates
+POST /api/admin/candidates/[id]/analyze
+GET  /api/candidate/invite/[token]
+POST /api/candidate/invite/[token]/start
+GET  /api/candidates/[id]
+POST /api/candidates/[id]/stage/advance
+POST /api/candidates/[id]/messages
+POST /api/candidates/[id]/workspace-chat
+POST /api/candidates/[id]/submit
+GET  /api/diagnostics/env
+GET  /api/diagnostics/model?provider=deepseek
+GET  /api/diagnostics/model?provider=openai
+```
+
+## Prompt 文件
+
+所有模型 prompt 均放在 `prompts/`，代码不再内联长 prompt：
+
+```text
+persona-profile.deepseek.md
+ability-plan.deepseek.md
+ability-plan.openai.md
+basic-stage-opening.deepseek.md
+ability-stage-opening.deepseek.md
+follow-up.deepseek.md
+follow-up.openai.md
+turn-score.deepseek.md
+turn-score.openai.md
+workspace-reply.deepseek.md
+workspace-reply.openai.md
+final-evaluation.deepseek.md
+final-evaluation.openai.md
 ```
 
 ## 环境变量
 
-复制 `.env.example` 到 `.env.local`：
+复制 `.env.example` 为 `.env.local`：
 
 ```text
 NEXT_PUBLIC_SUPABASE_URL=
@@ -43,12 +108,31 @@ OPENAI_MODEL=gpt-4o-mini
 APP_BASE_URL=http://localhost:3000
 ```
 
-说明：
+注意：
 
-- `SUPABASE_SERVICE_ROLE_KEY` 只能用于服务端，不能暴露给客户端。
-- 不要提交真实 API Key。
-- 不要使用 `DS-key.txt` 或 `chat_key.txt`。
-- 生产环境不使用本地 JSON 文件，Vercel 上所有数据写入 Supabase。
+- `SUPABASE_SERVICE_ROLE_KEY` 只能用于服务端，不能暴露到前端。
+- 不要把真实 API Key 提交到 GitHub。
+- 不再使用 `DS-key.txt` 或 `chat_key.txt`。
+- 生产环境不使用本地 JSON 数据文件，全部数据写入 Supabase。
+
+## 本地运行
+
+```bash
+npm install
+npm run dev
+```
+
+访问：
+
+```text
+http://localhost:3000
+```
+
+构建：
+
+```bash
+npm run build
+```
 
 ## Supabase 初始化
 
@@ -56,85 +140,65 @@ APP_BASE_URL=http://localhost:3000
 2. 打开 SQL Editor。
 3. 执行 `supabase/schema.sql`。
 4. 复制 Project URL 到 `NEXT_PUBLIC_SUPABASE_URL`。
-5. 复制 Service Role Key 到 `SUPABASE_SERVICE_ROLE_KEY`。
-6. 在本地 `.env.local` 和 Vercel Environment Variables 中配置上述变量。
-
-`supabase/schema.sql` 会创建并初始化：
-
-- `candidates`
-- `interviewer_evaluations`
-- `stages`
-- `messages`
-- `workspace_messages`
-- `event_logs`
-- `turn_scores`
-- `final_evaluations`
-- `agents`
-- `job_roles`
-
-## 新数据流
-
-1. 审核员进入 `/admin/candidates/new` 创建候选人。
-2. 审核员上传简历并填写多轮面试官评价。
-3. 后端调用 DeepSeek 生成 `persona_profile`。
-4. 后端生成唯一 `candidate_token` 和 `/candidate/invite/[token]` 专属链接。
-5. 候选人只能通过专属链接进入考核。
-6. 候选人端所有关键 API 都校验 `candidate_token`。
-7. 基础关卡、能力关卡、模型工作区、逐轮追问、逐轮评分、最终评分都调用 DeepSeek 或 OpenAI。
-8. 审核员详情页读取 Supabase 中的候选人档案、画像、评价、对话、事件、评分和最终报告。
-
-## Prompt 文件
-
-所有模型 prompt 存放在 `prompts/`：
-
-```text
-prompts/persona-profile.deepseek.md
-prompts/basic-stage-opening.deepseek.md
-prompts/ability-stage-opening.deepseek.md
-prompts/follow-up.deepseek.md
-prompts/follow-up.openai.md
-prompts/turn-score.deepseek.md
-prompts/turn-score.openai.md
-prompts/workspace-reply.deepseek.md
-prompts/workspace-reply.openai.md
-prompts/final-evaluation.deepseek.md
-prompts/final-evaluation.openai.md
-prompts/ability-plan.deepseek.md
-prompts/ability-plan.openai.md
-```
-
-`lib/prompts.ts` 负责读取 prompt 并替换变量。
+5. 复制 Secret key / service role key 到 `SUPABASE_SERVICE_ROLE_KEY`。
+6. 在 Vercel Environment Variables 中配置所有环境变量。
 
 ## Vercel 部署
 
-1. 将项目推送到 GitHub。
-2. 登录 Vercel。
-3. 点击 **Add New Project**。
-4. 选择 **Import Git Repository**。
-5. 选择 GitHub 仓库。
-6. Framework Preset 选择或自动识别为 **Next.js**。
-7. Build Command：`npm run build`。
-8. Output Directory：留空。
-9. 添加 Environment Variables。
-10. `APP_BASE_URL` 设置为 Vercel 域名，例如：
+Framework Preset：
 
 ```text
-APP_BASE_URL=https://your-vercel-domain.vercel.app
+Next.js
 ```
 
-11. 点击 Deploy。
+Build Command：
+
+```text
+npm run build
+```
+
+Output Directory：
+
+```text
+留空
+```
+
+部署后确认：
+
+```text
+/api/diagnostics/env
+/api/diagnostics/model?provider=deepseek
+/api/diagnostics/model?provider=openai
+```
+
+如果项目开启了 Vercel Deployment Protection，需要在已登录 Vercel 的浏览器中访问诊断接口。
 
 ## GitHub 上传
 
 ```bash
 git add .
-git commit -m "update supabase candidate invite flow"
+git commit -m "update ai cut arena"
 git push origin main
 ```
 
+## 清理规则
+
+项目根目录不应存在：
+
+```text
+DS-key.txt
+chat_key.txt
+data/store.json
+*.pdf
+*.doc
+*.docx
+```
+
+这些文件属于本地密钥、旧本地存储或测试资料，不参与部署。
+
 ## 常见问题
 
-- 如果模型调用失败，API 会返回明确 JSON：`model_call_failed`、`message`、`provider`。
-- 如果候选人没有有效 token，不能进入考核 API。
-- 如果 Supabase 表为空，请确认已执行 `supabase/schema.sql`。
-- 如果 Vercel 页面能打开但没有数据，请检查 Supabase URL、Service Role Key 和 RLS/权限配置。
+- 如果页面提示 `model_call_failed`，查看返回的 `message` 和 `provider`。
+- 如果候选人点击生成题目后没有题，查看 `/api/candidates/[id]/stage/advance` 的 Vercel Runtime Logs。
+- 如果右侧模型工作区没有回复，先访问 `/api/diagnostics/model?provider=deepseek` 验证模型 Key 和模型名。
+- 如果 Supabase 没有数据，确认已经执行 `supabase/schema.sql`，并确认 `SUPABASE_SERVICE_ROLE_KEY` 是 secret/service role key。
