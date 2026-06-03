@@ -1,8 +1,10 @@
 import { Stage, StageName, StageStatus } from "@/lib/types";
 import { db, many, maybeOne, one } from "./db";
+import { normalizeStageName, stageRank } from "@/lib/stageNames";
 
 export async function listStages(candidateId: string) {
-  return many<Stage>(db().from("stages").select("*").eq("candidate_id", candidateId).order("created_at", { ascending: true }));
+  const stages = await many<Stage>(db().from("stages").select("*").eq("candidate_id", candidateId).order("created_at", { ascending: true }));
+  return stages.map((stage) => ({ ...stage, name: normalizeStageName(String(stage.name)) }));
 }
 
 export async function getActiveStage(candidateId: string) {
@@ -47,10 +49,4 @@ export async function resetStages(candidateId: string) {
 
 function pickMostAdvancedStage(stages: Stage[]) {
   return stages.sort((a, b) => stageRank(b.name) - stageRank(a.name))[0] ?? null;
-}
-
-function stageRank(name: string) {
-  if (name.includes("能力")) return 3;
-  if (name.includes("基础")) return 2;
-  return 1;
 }

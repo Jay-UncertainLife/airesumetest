@@ -8,6 +8,7 @@ import { listJobRoles } from "@/lib/repositories/jobRoles";
 import { addMessage, listMessages } from "@/lib/repositories/messages";
 import { completeOtherActiveStages, createStage, getActiveStage, getNextStage, listStages, resetStages, updateStage } from "@/lib/repositories/stages";
 import { stageDurations } from "@/lib/stages";
+import { normalizeStageName } from "@/lib/stageNames";
 import { Candidate, Stage, StageName } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -198,10 +199,4 @@ async function createDefaultStages(candidateId: string) {
 async function getStageByName(candidateId: string, name: StageName) {
   const stages = await listStages(candidateId);
   return stages.find((stage) => normalizeStageName(String(stage.name)) === name && stage.status !== "completed") ?? null;
-}
-
-function normalizeStageName(name: string): StageName {
-  if (name === "基础关卡" || name.includes("基础")) return "基础关卡";
-  if (name === "能力关卡" || name.includes("能力")) return "能力关卡";
-  return "面试关卡准备";
 }

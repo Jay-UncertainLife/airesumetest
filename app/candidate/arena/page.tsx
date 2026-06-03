@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import FlowGuide from "@/app/components/FlowGuide";
 import { stageCopy } from "@/lib/stages";
+import { normalizeStageName, stageRank } from "@/lib/stageNames";
 import { Agent, Candidate, EventLog, Message, ModelProvider, Stage, TurnScore, WorkspaceMessage } from "@/lib/types";
 
 type CandidateData = {
@@ -31,7 +32,11 @@ export default function CandidateArenaPage() {
   const [nowMs, setNowMs] = useState(Date.now());
 
   const currentStage = useMemo(() => {
-    const activeStages = data?.stages.filter((stage) => stage.status === "in_progress") ?? [];
+    if (!data) return undefined;
+    const stageIdsWithAiQuestions = new Set(data.messages.filter((message) => message.role === "ai").map((message) => message.stage_id));
+    const stagesWithQuestions = data.stages.filter((stage) => stageIdsWithAiQuestions.has(stage.id));
+    if (stagesWithQuestions.length) return stagesWithQuestions.sort((a, b) => stageRank(b.name) - stageRank(a.name))[0];
+    const activeStages = data.stages.filter((stage) => stage.status === "in_progress");
     return activeStages.sort((a, b) => stageRank(b.name) - stageRank(a.name))[0];
   }, [data]);
 
@@ -185,8 +190,9 @@ export default function CandidateArenaPage() {
   const stageMessages = data.messages.filter((message) => message.stage_id === currentStage.id);
   const workspaceMessages = data.workspaceMessages;
   const hasNextStage = data.stages.some((stage) => stage.status === "not_started");
-  const isPrepStage = currentStage.name === "面试关卡准备";
-  const activeStep = isPrepStage ? 2 : currentStage.name === "基础关卡" ? 3 : 4;
+  const normalizedCurrentStageName = normalizeStageName(String(currentStage.name));
+  const isPrepStage = normalizedCurrentStageName === "面试关卡准备";
+  const activeStep = isPrepStage ? 2 : normalizedCurrentStageName === "基础关卡" ? 3 : 4;
   const latestScore = data.turnScores[data.turnScores.length - 1];
   const elapsedSeconds = currentStage.started_at ? Math.max(0, Math.floor((nowMs - new Date(currentStage.started_at).getTime()) / 1000)) : 0;
   const targetSeconds = currentStage.target_duration_seconds ?? 0;
@@ -208,8 +214,8 @@ export default function CandidateArenaPage() {
       <div className="arena-grid arena-grid-main">
         <aside className="panel">
           <p className="badge">{data.candidate.target_role}</p>
-          <h2>{currentStage.name}</h2>
-          <p className="muted">{stageCopy[currentStage.name]?.goal ?? "AI 考核官将根据候选人画像、岗位难度和能力维度生成本关问题。"}</p>
+          <h2>{normalizedCurrentStageName}</h2>
+          <p className="muted">{stageCopy[normalizedCurrentStageName]?.goal ?? "AI 考核官将根据候选人画像、岗位难度和能力维度生成本关问题。"}</p>
           {targetSeconds > 0 ? (
             <div className={`timer ${remainingSeconds < 0 ? "overtime" : ""}`}>
               <span>目标时长：{formatDuration(targetSeconds)}</span>
@@ -348,10 +354,4 @@ function formatDuration(seconds: number) {
   const mins = Math.floor(seconds / 60);
   const secs = seconds % 60;
   return `${mins}:${String(secs).padStart(2, "0")}`;
-}
-
-function stageRank(name: string) {
-  if (name.includes("能力")) return 3;
-  if (name.includes("基础")) return 2;
-  return 1;
 }

@@ -6,6 +6,7 @@ import { listEvents } from "@/lib/repositories/events";
 import { listMessages, listWorkspaceMessages } from "@/lib/repositories/messages";
 import { listStages } from "@/lib/repositories/stages";
 import { buildStageRecords } from "@/lib/stageRecords";
+import { formatChinaTime } from "@/lib/stageNames";
 
 export const dynamic = "force-dynamic";
 
@@ -81,7 +82,7 @@ export default async function AdminCandidateDetailPage({ params }: { params: { i
               </div>
               <p className="muted">
                 目标时长：{record.stage.target_duration_seconds ?? 0} 秒
-                {record.stage.started_at ? ` / 开始：${new Date(record.stage.started_at).toLocaleString()}` : ""}
+                {record.stage.started_at ? ` / 开始：${formatChinaTime(record.stage.started_at)}` : ""}
               </p>
 
               <h4>AI 题目与追问</h4>
