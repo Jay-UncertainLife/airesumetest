@@ -107,7 +107,10 @@ export default function CandidateArenaPage() {
     setError("");
     setStatusMessage("正在调用 DeepSeek/OpenAI 生成关卡首题。模型返回前页面会自动刷新关键事件。");
     try {
-      await authedPost(`/api/candidates/${data.candidate.id}/stage/advance`, {});
+      const result = await authedPost(`/api/candidates/${data.candidate.id}/stage/advance`, {});
+      if (!result?.message?.content) {
+        throw new Error("后端请求完成，但没有返回 AI 首题内容。请检查模型调用日志。");
+      }
       await load();
       setStatusMessage("关卡首题已生成。");
     } catch (err) {

@@ -1,4 +1,4 @@
-export type Recommendation = "通过" | "继续观察" | "Cut";
+﻿export type Recommendation = "通过" | "继续观察" | "Cut";
 export type CandidateStatus = "created" | "profiled" | "invited" | "in_progress" | "submitted" | "evaluated" | "reviewed";
 export type StageName = "面试关卡准备" | "基础关卡" | "能力关卡";
 export type StageStatus = "not_started" | "in_progress" | "completed";
@@ -220,3 +220,4 @@ export type TurnScore = {
   model_provider: ModelProvider;
   created_at: string;
 };
+
