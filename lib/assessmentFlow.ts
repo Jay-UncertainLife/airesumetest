@@ -1,6 +1,6 @@
 import { generateFinalEvaluation, generateFollowUp, generateStageOpening, generateWorkspaceReply, scoreTurn } from "./ai";
 import { AssessmentStageKey, AssessmentState } from "./assessmentTypes";
-import { calculateTimeCoefficient, basicStageDimensions, requiredQuestionsByStage, stageDurations, timeoutLevel } from "./stages";
+import { calculateTimeCoefficient, basicStageDimensions, stageDurations, timeoutLevel } from "./stages";
 import { ABILITY_STAGE, BASIC_STAGE, stageNameFromKey } from "./stageNames";
 import { AbilityDimension, Candidate, ModelProvider, Stage, TurnScore } from "./types";
 import { listAgents } from "./repositories/agents";
@@ -88,7 +88,7 @@ export async function getAssessmentCurrent(candidate: Candidate) {
           : final ?? ability ?? basic;
 
   let activeQuestion = activeProgress?.active_question_id ? await getQuestion(activeProgress.active_question_id) : null;
-  if (!activeQuestion && activeProgress?.current_question_id && ["ANSWERING", "ANSWERING_OVERTIME", "SUBMITTING_ANSWER", "SCORING"].includes(activeProgress.current_state)) {
+  if (!activeQuestion && activeProgress?.current_question_id && ["ANSWERING", "ANSWERING_OVERTIME", "SUBMITTING_ANSWER", "SCORING", "WAITING_NEXT_ACTION", "MANUAL_REVIEW_REQUIRED"].includes(activeProgress.current_state)) {
     activeQuestion = await getQuestion(activeProgress.current_question_id);
   }
   if (!activeQuestion && activeProgress && ["ANSWERING", "ANSWERING_OVERTIME"].includes(activeProgress.current_state)) {
@@ -273,7 +273,7 @@ export async function scoreCurrentAnswer(candidate: Candidate, provider: ModelPr
     const contentScore = Number(scoreDraft.average_score || 0);
     const finalScore = Number((contentScore * Number(answer.time_factor ?? 1)).toFixed(1));
     const scoreStatus = scoreStatusFromScore(finalScore, answer);
-    const needFollowUp = finalScore < 80 || scoreStatus === "score_manual_review";
+    const needsManualReview = finalScore < 80 || scoreStatus === "score_manual_review";
     const savedScore = await addAssessmentTurnScore({
       candidate_id: candidate.id,
       stage_key: progress.stage_key,
@@ -293,8 +293,8 @@ export async function scoreCurrentAnswer(candidate: Candidate, provider: ModelPr
       risk_flags: scoreDraft.risk_tags,
       reason_summary: scoreDraft.reason_summary,
       evidence_summary: [scoreDraft.reason_summary],
-      need_follow_up: needFollowUp,
-      next_action: needFollowUp ? "follow_up" : "next_question",
+      need_follow_up: false,
+      next_action: needsManualReview ? "manual_review" : progress.stage_key === "basic" ? "ability_stage" : "final_stage",
       next_question_standard: scoreDraft.next_question_standard,
       model_provider: provider,
       model_name: provider === "openai" ? process.env.OPENAI_MODEL ?? "gpt-4o-mini" : process.env.DEEPSEEK_MODEL ?? "deepseek-chat",
@@ -306,14 +306,16 @@ export async function scoreCurrentAnswer(candidate: Candidate, provider: ModelPr
     });
     await updateQuestion(question.question_id, { status: "scored" });
     const scoredCount = (await listAssessmentScores(candidate.id, progress.stage_key)).length;
-    const required = requiredQuestionsByStage[progress.stage_key === "basic" ? "basic" : "ability"];
-    const stageComplete = progress.stage_key !== "final" && scoredCount >= required;
-    const nextState: AssessmentState = stageComplete
-      ? progress.stage_key === "basic" ? "BASIC_STAGE_COMPLETED" : "ABILITY_STAGE_COMPLETED"
-      : "WAITING_NEXT_ACTION";
+    const nextState: AssessmentState = needsManualReview
+      ? "MANUAL_REVIEW_REQUIRED"
+      : progress.stage_key === "basic"
+        ? "BASIC_STAGE_COMPLETED"
+        : progress.stage_key === "ability"
+          ? "ABILITY_STAGE_COMPLETED"
+          : "FINAL_EVALUATION_COMPLETED";
     await updateStageProgress(progress.id, {
       current_state: nextState,
-      active_question_id: null,
+      active_question_id: needsManualReview ? question.question_id : null,
       current_question_id: question.question_id,
       score_status: scoreStatus,
       dimension_progress_json: {
@@ -326,11 +328,31 @@ export async function scoreCurrentAnswer(candidate: Candidate, provider: ModelPr
       stage_key: progress.stage_key,
       question_id: question.question_id,
       session_id: session.session_id,
-      event_type: scoreStatus === "score_manual_review" ? "manual_review_required" : "scoring_success",
-      event_payload: { finalScore, scoreStatus, required, scoredCount },
+      event_type: needsManualReview ? "manual_review_required" : "scoring_success",
+      event_payload: { finalScore, scoreStatus, scoredCount },
       ai_summary: scoreDraft.reason_summary,
       risk_tags: scoreDraft.risk_tags
     });
+    if (!needsManualReview && progress.stage_key === "basic") {
+      await ensureStageProgress({ candidate_id: candidate.id, stage_key: "ability", current_state: "INIT", target_duration_seconds: STAGE_TARGET_SECONDS.ability });
+      await addAssessmentEvent({
+        candidate_id: candidate.id,
+        stage_key: "ability",
+        event_type: "stage_entered",
+        event_source: "system",
+        event_payload: { from: "basic", previous_score: finalScore }
+      });
+    }
+    if (!needsManualReview && progress.stage_key === "ability") {
+      await ensureStageProgress({ candidate_id: candidate.id, stage_key: "final", current_state: "INIT", target_duration_seconds: STAGE_TARGET_SECONDS.final });
+      await addAssessmentEvent({
+        candidate_id: candidate.id,
+        stage_key: "final",
+        event_type: "stage_entered",
+        event_source: "system",
+        event_payload: { from: "ability", previous_score: finalScore }
+      });
+    }
     return getAssessmentCurrent(candidate);
   } catch (error) {
     await updateStageProgress(progress.id, {
@@ -360,6 +382,14 @@ export async function nextQuestion(candidate: Candidate, provider: ModelProvider
   }
   if (progress.current_state === "ABILITY_STAGE_COMPLETED") {
     await ensureStageProgress({ candidate_id: candidate.id, stage_key: "final", current_state: "INIT", target_duration_seconds: STAGE_TARGET_SECONDS.final });
+    return getAssessmentCurrent(candidate);
+  }
+  if (current.latestScore?.score_status === "score_manual_review" || Number(current.latestScore?.average_score ?? 100) < 80) {
+    await updateStageProgress(progress.id, {
+      current_state: "MANUAL_REVIEW_REQUIRED",
+      active_question_id: current.current_question?.question_id ?? progress.active_question_id,
+      score_status: current.latestScore?.score_status ?? "score_manual_review"
+    });
     return getAssessmentCurrent(candidate);
   }
   if (progress.current_state !== "WAITING_NEXT_ACTION") return getAssessmentCurrent(candidate);
@@ -617,6 +647,9 @@ function buildButton(progress: any, question: any, answer: any, score: any) {
   if (progress.current_state === "SUBMITTING_ANSWER" || progress.current_state === "SCORING" || (answer && !score)) {
     return { label: "AI 正在评分，请稍候", action: "score_answer", disabled: false };
   }
+  if (progress.current_state === "MANUAL_REVIEW_REQUIRED" || Number(score?.average_score ?? 100) < 80 || score?.score_status === "score_manual_review") {
+    return { label: "你的回答不通过，等待人工复核", action: "wait", disabled: true };
+  }
   if (progress.current_state === "WAITING_NEXT_ACTION") return { label: "进入下一题", action: "next_question", disabled: false };
   if (progress.current_state === "BASIC_STAGE_COMPLETED") return { label: "进入能力关卡", action: "next_question", disabled: false };
   if (progress.current_state === "ABILITY_STAGE_COMPLETED") return { label: "提交最终方案", action: "final_submit", disabled: false };
@@ -647,8 +680,8 @@ function fakeStage(stageKey: AssessmentStageKey): Stage {
   };
 }
 
-function scoreStatusFromScore(finalScore: number, answer: { answer_text?: string | null; ai_usage_note?: string | null; time_factor?: number | null }) {
-  if (!answer.answer_text?.trim() || !answer.ai_usage_note?.trim() || Number(answer.time_factor ?? 1) === 0) return "score_manual_review";
+function scoreStatusFromScore(finalScore: number, answer: { answer_text?: string | null; time_factor?: number | null }) {
+  if (!answer.answer_text?.trim() || Number(answer.time_factor ?? 1) === 0) return "score_manual_review";
   if (finalScore >= 80) return "score_passed";
   if (finalScore >= 60) return "score_warning";
   if (finalScore >= 40) return "score_risk";

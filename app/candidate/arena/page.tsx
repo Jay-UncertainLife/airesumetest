@@ -53,12 +53,12 @@ export default function CandidateArenaPage() {
   const router = useRouter();
   const [data, setData] = useState<StageCurrent | null>(null);
   const [answer, setAnswer] = useState("");
-  const [aiUsageNote, setAiUsageNote] = useState("");
   const [assistantInput, setAssistantInput] = useState("");
   const [modelProvider, setModelProvider] = useState<ModelProvider>("deepseek");
   const [loadingAction, setLoadingAction] = useState<string | null>(null);
   const [assistantOpen, setAssistantOpen] = useState(false);
   const [assistantLoading, setAssistantLoading] = useState(false);
+  const [stageNotice, setStageNotice] = useState("");
   const [assistantPos, setAssistantPos] = useState({ x: 24, y: 24 });
   const [error, setError] = useState("");
   const [nowMs, setNowMs] = useState(Date.now());
@@ -71,6 +71,10 @@ export default function CandidateArenaPage() {
   const isBusy = Boolean(loadingAction) || ["GENERATING_FIRST_QUESTION", "GENERATING_NEXT_QUESTION", "SUBMITTING_ANSWER", "SCORING"].includes(data?.activeProgress?.current_state ?? "");
   const canEdit = Boolean(data?.current_question) && !data?.answer && !isBusy && ["ANSWERING", "ANSWERING_OVERTIME"].includes(data?.activeProgress?.current_state ?? "");
   const stageQuestions = useMemo(() => data?.questions.filter((q) => q.stage_key === data.stage_key) ?? [], [data]);
+  const manualReviewRequired =
+    data?.activeProgress?.current_state === "MANUAL_REVIEW_REQUIRED" ||
+    data?.latestScore?.score_status === "score_manual_review" ||
+    Number(data?.latestScore?.average_score ?? 100) < 80;
   const effectiveTiming = useMemo(() => {
     if (!data) return null;
     if (!data.current_question || !["ANSWERING", "ANSWERING_OVERTIME"].includes(data.activeProgress?.current_state ?? "")) return data.timing;
@@ -124,8 +128,9 @@ export default function CandidateArenaPage() {
     if (nextQuestionId !== questionIdRef.current) {
       questionIdRef.current = nextQuestionId;
       setAnswer(next.draft?.draft_text ?? next.answer?.answer_text ?? "");
-      setAiUsageNote(next.draft?.ai_usage_note_draft ?? next.answer?.ai_usage_note ?? "");
     }
+    if (data?.stage_key === "basic" && next.stage_key === "ability") setStageNotice("基础关卡已通过，正在进入能力关卡。");
+    if (data?.stage_key === "ability" && next.stage_key === "final") setStageNotice("能力关卡已通过，正在进入最终评价。");
   }
 
   useEffect(() => {
@@ -155,16 +160,16 @@ export default function CandidateArenaPage() {
   useEffect(() => {
     if (!canEdit || !data?.current_question) return;
     const timer = window.setInterval(() => {
-      const payload = `${data.current_question?.question_id}:${answer}:${aiUsageNote}`;
+      const payload = `${data.current_question?.question_id}:${answer}`;
       if (payload === lastSavedRef.current) return;
       lastSavedRef.current = payload;
       void post("/api/candidate/stage/save-draft", {
         draft_text: answer,
-        ai_usage_note_draft: aiUsageNote
+        ai_usage_note_draft: ""
       }, false);
     }, 30000);
     return () => window.clearInterval(timer);
-  }, [answer, aiUsageNote, canEdit, data?.current_question]);
+  }, [answer, canEdit, data?.current_question]);
 
   useEffect(() => {
     if (!canEdit || !effectiveTiming?.should_auto_submit) return;
@@ -229,13 +234,11 @@ export default function CandidateArenaPage() {
     try {
       await post("/api/candidate/stage/submit-answer", {
         answer_text: answer,
-        ai_usage_note: aiUsageNote,
+        ai_usage_note: "",
         submit_type: submitType,
         client_submit_id: `${data.current_question.question_id}-${Date.now()}`
       });
       await post("/api/candidate/stage/score-answer", {});
-      setAnswer("");
-      setAiUsageNote("");
     } catch (err) {
       setError(err instanceof Error ? err.message : "提交回答失败");
     } finally {
@@ -250,8 +253,13 @@ export default function CandidateArenaPage() {
     setAssistantLoading(true);
     setError("");
     try {
-      await post("/api/candidate/assistant/chat", { content }, false);
-      await load();
+      const result = await post("/api/candidate/assistant/chat", { content }, false);
+      if (isAssistantChatResult(result)) {
+        setData((current) => current ? {
+          ...current,
+          chatMessages: [...current.chatMessages, result.userMessage, result.modelMessage]
+        } : current);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "辅助 AI 调用失败");
     } finally {
@@ -294,6 +302,24 @@ export default function CandidateArenaPage() {
 
       {error ? <p className="badge cut">{error}</p> : null}
       {data.activeProgress?.last_error ? <p className="badge cut">{data.activeProgress.last_error}</p> : null}
+      {stageNotice ? (
+        <div className="modal-backdrop">
+          <div className="modal">
+            <h2>{stageNotice}</h2>
+            <p className="muted">系统已保存上一阶段结果，当前页面会继续使用云端状态恢复。</p>
+            <button className="btn" type="button" onClick={() => setStageNotice("")}>继续</button>
+          </div>
+        </div>
+      ) : null}
+      {manualReviewRequired ? (
+        <div className="modal-backdrop">
+          <div className="modal review-blocked-modal">
+            <h2>你的回答不通过，等待人工复核</h2>
+            <p className="muted">本题得分低于标准或触发人工复核条件，系统已锁定当前题目并同步给审核官。</p>
+            {data.latestScore?.average_score !== undefined ? <p className="badge cut">当前得分：{data.latestScore.average_score}</p> : null}
+          </div>
+        </div>
+      ) : null}
 
       <main className="stage-workspace">
         <section className="question-panel">
@@ -315,16 +341,6 @@ export default function CandidateArenaPage() {
               onChange={(event) => setAnswer(event.target.value)}
               disabled={!canEdit}
               placeholder="请在这里输入正式作答。只有这里的内容会进入评分。"
-            />
-          </div>
-          <div className="field">
-            <label>AI 使用说明</label>
-            <textarea
-              className="textarea usage-textarea"
-              value={aiUsageNote}
-              onChange={(event) => setAiUsageNote(event.target.value)}
-              disabled={!canEdit}
-              placeholder="说明是否使用 AI、使用了什么 AI、采纳/否定/修改了哪些内容。"
             />
           </div>
 
@@ -409,6 +425,7 @@ function stateLabel(state?: string) {
     SUBMITTING_ANSWER: "提交中",
     SCORING: "评分中",
     WAITING_NEXT_ACTION: "等待下一题",
+    MANUAL_REVIEW_REQUIRED: "等待人工复核",
     BASIC_STAGE_COMPLETED: "基础关卡完成",
     ABILITY_STAGE_COMPLETED: "能力关卡完成",
     GENERATION_FAILED: "生成失败",
@@ -437,4 +454,16 @@ function isStageCurrent(value: unknown): value is StageCurrent {
     Array.isArray(data.scores) &&
     Array.isArray(data.chatMessages)
   );
+}
+
+function isAssistantChatResult(value: unknown): value is { userMessage: StageCurrent["chatMessages"][number]; modelMessage: StageCurrent["chatMessages"][number] } {
+  if (!value || typeof value !== "object") return false;
+  const result = value as { userMessage?: unknown; modelMessage?: unknown };
+  return isChatMessage(result.userMessage) && isChatMessage(result.modelMessage);
+}
+
+function isChatMessage(value: unknown): value is StageCurrent["chatMessages"][number] {
+  if (!value || typeof value !== "object") return false;
+  const message = value as Partial<StageCurrent["chatMessages"][number]>;
+  return typeof message.message_id === "string" && (message.role === "candidate" || message.role === "model") && typeof message.content === "string";
 }
