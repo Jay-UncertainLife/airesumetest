@@ -22,6 +22,13 @@ export async function POST(request: Request, { params }: { params: { id: string 
       model_provider: provider,
       content: body.content
     });
+    await addEvent({
+      candidate_id: params.id,
+      stage_id: currentStage?.id,
+      event_type: "workspace_model_call_started",
+      raw_content: `${provider}: ${body.content}`,
+      ai_summary: `正在调用 ${provider} 生成模型交互回复。`
+    });
     const answer = await generateWorkspaceReply({
       candidate,
       stage: currentStage ?? undefined,

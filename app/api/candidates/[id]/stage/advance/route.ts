@@ -40,6 +40,13 @@ export async function POST(request: Request, { params }: { params: { id: string 
 
     let abilityPlan = candidate.ability_plan;
     if (!abilityPlan) {
+      await addEvent({
+        candidate_id: params.id,
+        stage_id: current.id,
+        event_type: "ability_plan_generation_started",
+        raw_content: "Calling DeepSeek to generate ability plan before stage opening.",
+        ai_summary: "正在调用 DeepSeek 生成动态能力维度和 Agent 参与策略。"
+      });
       abilityPlan = await generateAbilityPlan({
         provider: "deepseek",
         targetRole: candidate.target_role ?? jobRole.name,
@@ -49,11 +56,25 @@ export async function POST(request: Request, { params }: { params: { id: string 
         fallbackDimensions: jobRole.ability_dimensions
       });
       await updateCandidate(candidate.id, { ability_plan: abilityPlan });
+      await addEvent({
+        candidate_id: params.id,
+        stage_id: current.id,
+        event_type: "ability_plan_generated",
+        raw_content: JSON.stringify(abilityPlan),
+        ai_summary: "已生成动态能力维度和 Agent 参与策略。"
+      });
     }
 
     const currentMessages = await listMessages(params.id);
     const currentHasQuestion = currentMessages.some((message) => message.stage_id === current.id && message.role === "ai");
     if (current.name !== "面试关卡准备" && !currentHasQuestion) {
+      await addEvent({
+        candidate_id: params.id,
+        stage_id: current.id,
+        event_type: "stage_question_generation_started",
+        raw_content: `Generating opening question for ${current.name}`,
+        ai_summary: "正在调用模型生成本关首题。"
+      });
       const opening = await generateStageOpening({
         provider: candidate.selected_model ?? "deepseek",
         candidate: { ...candidate, ability_plan: abilityPlan },
@@ -90,6 +111,14 @@ export async function POST(request: Request, { params }: { params: { id: string 
       status: "in_progress",
       target_duration_seconds: next.target_duration_seconds ?? stageDurations[next.name],
       started_at: new Date().toISOString()
+    });
+
+    await addEvent({
+      candidate_id: params.id,
+      stage_id: startedStage.id,
+      event_type: "stage_question_generation_started",
+      raw_content: `Generating opening question for ${startedStage.name}`,
+      ai_summary: "正在调用模型生成本关首题。"
     });
 
     const opening = await generateStageOpening({
