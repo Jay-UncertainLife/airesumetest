@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { generateFinalEvaluation, generateFollowUp, scoreTurn } from "@/lib/ai";
+import { generateFollowUp, scoreTurn } from "@/lib/ai";
 import { buildArenaProgress } from "@/lib/arenaProgress";
 import { assertCandidateToken, jsonError, readJson, tokenFromRequest } from "@/lib/apiUtils";
 import { calculateTimeCoefficient } from "@/lib/stages";
@@ -7,9 +7,9 @@ import { normalizeStageName } from "@/lib/stageNames";
 import { listAgents } from "@/lib/repositories/agents";
 import { updateCandidate } from "@/lib/repositories/candidates";
 import { addEvent, listEvents } from "@/lib/repositories/events";
-import { addFinalEvaluation, addTurnScore, listTurnScores } from "@/lib/repositories/evaluations";
-import { addMessage, listMessages, listWorkspaceMessages } from "@/lib/repositories/messages";
-import { getActiveStage, listStages, updateStage } from "@/lib/repositories/stages";
+import { addTurnScore, listTurnScores } from "@/lib/repositories/evaluations";
+import { addMessage, listMessages } from "@/lib/repositories/messages";
+import { getActiveStage, listStages } from "@/lib/repositories/stages";
 import { ModelProvider } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -30,12 +30,14 @@ export async function GET(request: Request, { params }: { params: { id: string }
 
 export async function POST(request: Request, { params }: { params: { id: string } }) {
   try {
-    const body = await readJson<{ content: string; model_provider?: ModelProvider; candidate_token?: string }>(request);
+    const body = await readJson<{ content: string; ai_usage_note?: string; model_provider?: ModelProvider; candidate_token?: string }>(request);
+    if (!body.content?.trim()) return NextResponse.json({ error: "empty_answer", message: "正式回答不能为空。" }, { status: 400 });
+
     const candidate = await assertCandidateToken(params.id, tokenFromRequest(request, body));
     const selectedModel = body.model_provider === "openai" ? "openai" : candidate.selected_model ?? "deepseek";
     const currentStage = await getActiveStage(params.id);
-    if (!currentStage) return NextResponse.json({ error: "active_stage_not_found" }, { status: 404 });
-    if (!candidate.ability_plan) return NextResponse.json({ error: "ability_plan_not_ready" }, { status: 400 });
+    if (!currentStage) return NextResponse.json({ error: "active_stage_not_found", message: "当前没有进行中的关卡。" }, { status: 404 });
+    if (!candidate.ability_plan) return NextResponse.json({ error: "ability_plan_not_ready", message: "能力维度尚未生成，请先进入关卡准备流程。" }, { status: 400 });
 
     const elapsedSeconds = currentStage.started_at
       ? Math.max(0, Math.round((Date.now() - new Date(currentStage.started_at).getTime()) / 1000))
@@ -49,19 +51,20 @@ export async function POST(request: Request, { params }: { params: { id: string 
       stage_id: currentStage.id,
       role: "candidate",
       model_provider: selectedModel,
-      content: body.content
+      content: body.content.trim()
     });
     await addEvent({
       candidate_id: params.id,
       stage_id: currentStage.id,
-      event_type: "candidate_response",
-      raw_content: body.content,
-      ai_summary: "候选人提交了一次关卡回应。"
+      event_type: "answer_submitted",
+      raw_content: JSON.stringify({ answer: body.content, ai_usage_note: body.ai_usage_note ?? "" }),
+      ai_summary: "候选人提交了一次正式关卡回答。"
     });
 
     const turnScoreDraft = await scoreTurn({
       provider: selectedModel,
       candidateAnswer: body.content,
+      aiUsageNote: body.ai_usage_note,
       currentStage: { ...currentStage, name: normalizeStageName(String(currentStage.name)) },
       abilityPlan: candidate.ability_plan,
       messageId: candidateMessage.id,
@@ -73,7 +76,7 @@ export async function POST(request: Request, { params }: { params: { id: string 
     await addEvent({
       candidate_id: params.id,
       stage_id: currentStage.id,
-      event_type: "turn_score_generated",
+      event_type: "scoring_success",
       raw_content: JSON.stringify(turnScore),
       ai_summary: `本轮得分 ${turnScore.average_score}，建议：${turnScore.recommendation}`,
       risk_tags: turnScore.risk_tags
@@ -84,9 +87,9 @@ export async function POST(request: Request, { params }: { params: { id: string 
       await addEvent({
         candidate_id: params.id,
         stage_id: currentStage.id,
-        event_type: "human_review_required",
+        event_type: "manual_review_required",
         raw_content: JSON.stringify(turnScore),
-        ai_summary: `本轮得分 ${turnScore.average_score}，低于阈值，进入人工复核提示。`,
+        ai_summary: `本轮得分 ${turnScore.average_score}，低于阈值，审核官页面需人工复核。`,
         risk_tags: ["低分复核", ...turnScore.risk_tags]
       });
     }
@@ -114,7 +117,7 @@ export async function POST(request: Request, { params }: { params: { id: string 
       agents.find((item) => item.status === "enabled" && item.target_role === candidate.target_role && item.agent_role === "lead_examiner") ??
       agents.find((item) => item.status === "enabled") ??
       agents[0];
-    if (!agent) return NextResponse.json({ error: "agent_not_configured" }, { status: 400 });
+    if (!agent) return NextResponse.json({ error: "agent_not_configured", message: "尚未配置可用 AI Agent。" }, { status: 400 });
 
     const history = await listMessages(params.id);
     const followUp = await generateFollowUp({

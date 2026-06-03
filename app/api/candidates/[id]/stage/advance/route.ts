@@ -10,7 +10,7 @@ import { listJobRoles } from "@/lib/repositories/jobRoles";
 import { addMessage, listMessages } from "@/lib/repositories/messages";
 import { completeOtherActiveStages, createStage, getActiveStage, getNextStage, listStages, resetStages, updateStage } from "@/lib/repositories/stages";
 import { stageDurations } from "@/lib/stages";
-import { normalizeStageName } from "@/lib/stageNames";
+import { ABILITY_STAGE, BASIC_STAGE, PREP_STAGE, normalizeStageName } from "@/lib/stageNames";
 import { Candidate, Stage, StageName } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -38,7 +38,7 @@ export async function POST(request: Request, { params }: { params: { id: string 
         candidate_id: params.id,
         stage_id: current.id,
         event_type: "ability_plan_generation_started",
-        raw_content: "Calling DeepSeek to generate ability plan before stage opening.",
+        raw_content: "Calling model to generate ability plan before stage opening.",
         ai_summary: "正在调用 DeepSeek 生成动态能力维度和 Agent 参与策略。"
       });
       abilityPlan = await generateAbilityPlan({
@@ -60,9 +60,9 @@ export async function POST(request: Request, { params }: { params: { id: string 
     }
 
     const targetStage = await resolveTargetStage(params.id, current);
-    const existingQuestion = await findExistingQuestion(params.id, targetStage.id);
+    const startedStage = await activateTargetStage(params.id, current, targetStage);
+    const existingQuestion = await findExistingQuestion(params.id, startedStage.id);
     if (existingQuestion) {
-      const startedStage = await activateTargetStage(params.id, current, targetStage);
       const progress = await getProgress(params.id);
       return NextResponse.json({ stage: startedStage, message: existingQuestion, existing: true, progress });
     }
@@ -70,13 +70,12 @@ export async function POST(request: Request, { params }: { params: { id: string 
     const message = await generateAndPersistOpening({
       candidateId: params.id,
       candidate: { ...candidate, ability_plan: abilityPlan },
-      stage: targetStage,
+      stage: startedStage,
       agents,
       jobRole,
       selectedModel: candidate.selected_model ?? "deepseek"
     });
 
-    const startedStage = await activateTargetStage(params.id, current, targetStage);
     const progress = await getProgress(params.id);
     return NextResponse.json({ stage: startedStage, message, existing: false, progress });
   } catch (error) {
@@ -86,22 +85,22 @@ export async function POST(request: Request, { params }: { params: { id: string 
 
 async function resolveTargetStage(candidateId: string, current: Stage) {
   const currentName = normalizeStageName(String(current.name));
-  if (currentName === "面试关卡准备") {
-    const basic = await getStageByName(candidateId, "基础关卡");
+  if (currentName === PREP_STAGE) {
+    const basic = await getStageByName(candidateId, BASIC_STAGE);
     if (!basic) throw new Error("基础关卡未初始化。");
     return basic;
   }
-  if (currentName === "基础关卡") {
+  if (currentName === BASIC_STAGE) {
     const progress = await getProgress(candidateId);
     if (!progress.canAdvanceStage) {
       throw new Error(`基础关卡尚未完成。当前已完成 ${progress.answeredTurns}/${progress.requiredTurns} 轮，请继续正式作答。`);
     }
     await updateStage(current.id, { status: "completed", completed_at: new Date().toISOString() });
-    const ability = await getStageByName(candidateId, "能力关卡");
+    const ability = await getStageByName(candidateId, ABILITY_STAGE);
     if (!ability) throw new Error("能力关卡未初始化。");
     return ability;
   }
-  throw new Error("能力关卡完成前不能继续进入下一关。");
+  throw new Error("能力关卡完成后请进入最终提交页，不能继续生成下一关。");
 }
 
 async function activateTargetStage(candidateId: string, current: Stage, target: Stage) {
@@ -132,14 +131,14 @@ async function generateAndPersistOpening(input: {
   jobRole: Awaited<ReturnType<typeof listJobRoles>>[number];
   selectedModel: "deepseek" | "openai";
 }) {
+  const normalizedStage = { ...input.stage, name: normalizeStageName(String(input.stage.name)) };
   await addEvent({
     candidate_id: input.candidateId,
     stage_id: input.stage.id,
-    event_type: "stage_question_generation_started",
-    raw_content: `Generating opening question for ${input.stage.name}`,
+    event_type: "question_generation_started",
+    raw_content: `Generating opening question for ${normalizedStage.name}`,
     ai_summary: "正在调用模型生成本关首题。"
   });
-  const normalizedStage = { ...input.stage, name: normalizeStageName(String(input.stage.name)) };
   const opening = await generateStageOpening({
     provider: input.selectedModel,
     candidate: input.candidate,
@@ -162,10 +161,10 @@ async function generateAndPersistOpening(input: {
   await addEvent({
     candidate_id: input.candidateId,
     stage_id: input.stage.id,
-    event_type: normalizedStage.name === "能力关卡" ? "pressure_added" : "ai_question",
+    event_type: "question_generation_success",
     raw_content: message.content,
     ai_summary: JSON.stringify(opening),
-    risk_tags: normalizedStage.name === "能力关卡" ? ["时间限制", "工程资源限制", "证据留痕限制"] : []
+    risk_tags: normalizedStage.name === ABILITY_STAGE ? ["时间限制", "工程资源限制", "证据留痕限制"] : []
   });
   return message;
 }
@@ -178,22 +177,22 @@ async function ensureStageFlow(candidateId: string) {
   }
 
   const normalized = stages.map((stage) => ({ ...stage, normalizedName: normalizeStageName(String(stage.name)) }));
-  if (!normalized.some((stage) => stage.normalizedName === "基础关卡")) {
-    await createStage({ candidate_id: candidateId, name: "基础关卡", status: "not_started", target_duration_seconds: stageDurations["基础关卡"] });
+  if (!normalized.some((stage) => stage.normalizedName === BASIC_STAGE)) {
+    await createStage({ candidate_id: candidateId, name: BASIC_STAGE, status: "not_started", target_duration_seconds: stageDurations[BASIC_STAGE] });
   }
-  if (!normalized.some((stage) => stage.normalizedName === "能力关卡")) {
-    await createStage({ candidate_id: candidateId, name: "能力关卡", status: "not_started", target_duration_seconds: stageDurations["能力关卡"] });
+  if (!normalized.some((stage) => stage.normalizedName === ABILITY_STAGE)) {
+    await createStage({ candidate_id: candidateId, name: ABILITY_STAGE, status: "not_started", target_duration_seconds: stageDurations[ABILITY_STAGE] });
   }
-  if (!normalized.some((stage) => stage.normalizedName === "面试关卡准备") && !stages.some((stage) => stage.status === "in_progress")) {
-    await createStage({ candidate_id: candidateId, name: "面试关卡准备", status: "in_progress", target_duration_seconds: 0, started_at: new Date().toISOString() });
+  if (!normalized.some((stage) => stage.normalizedName === PREP_STAGE) && !stages.some((stage) => stage.status === "in_progress")) {
+    await createStage({ candidate_id: candidateId, name: PREP_STAGE, status: "in_progress", target_duration_seconds: 0, started_at: new Date().toISOString() });
   }
 }
 
 async function createDefaultStages(candidateId: string) {
   await resetStages(candidateId);
-  await createStage({ candidate_id: candidateId, name: "面试关卡准备", status: "in_progress", target_duration_seconds: 0, started_at: new Date().toISOString() });
-  await createStage({ candidate_id: candidateId, name: "基础关卡", status: "not_started", target_duration_seconds: stageDurations["基础关卡"] });
-  await createStage({ candidate_id: candidateId, name: "能力关卡", status: "not_started", target_duration_seconds: stageDurations["能力关卡"] });
+  await createStage({ candidate_id: candidateId, name: PREP_STAGE, status: "in_progress", target_duration_seconds: 0, started_at: new Date().toISOString() });
+  await createStage({ candidate_id: candidateId, name: BASIC_STAGE, status: "not_started", target_duration_seconds: stageDurations[BASIC_STAGE] });
+  await createStage({ candidate_id: candidateId, name: ABILITY_STAGE, status: "not_started", target_duration_seconds: stageDurations[ABILITY_STAGE] });
 }
 
 async function getStageByName(candidateId: string, name: StageName) {

@@ -8,6 +8,13 @@ export type ParticipationLevel = "P0" | "P1" | "P2" | "P3";
 
 export type PromptName =
   | "persona-profile.deepseek.md"
+  | "basic_stage/generate_first_question.md"
+  | "basic_stage/generate_followup_question.md"
+  | "basic_stage/score_answer.md"
+  | "ability_stage/generate_first_question.md"
+  | "ability_stage/generate_followup_question.md"
+  | "ability_stage/score_answer.md"
+  | "final_stage/generate_review_report.md"
   | "basic-stage-opening.deepseek.md"
   | "ability-stage-opening.deepseek.md"
   | "follow-up.deepseek.md"

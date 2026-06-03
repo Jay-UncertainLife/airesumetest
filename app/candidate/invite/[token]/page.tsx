@@ -41,8 +41,8 @@ export default function CandidateInvitePage({ params }: { params: { token: strin
       <section className="panel">
         <h1 className="title">AI Cut Arena</h1>
         <p className="subtitle">候选人：{invite.name}</p>
-        <p>目标岗位：{invite.target_role} · 难度 {invite.target_difficulty}</p>
-        <p className="muted">本考核将记录正式作答、模型使用痕迹、关键事件、逐轮评分和最终报告。页面不会展示你的完整简历或面试官内部评价。</p>
+        <p>目标岗位：{invite.target_role} / 难度 {invite.target_difficulty}</p>
+        <p className="muted">本次考核会记录正式作答、AI 使用说明、关键事件、逐轮评分和最终报告。候选人端不会展示完整简历或面试官内部评价。</p>
         <button className="btn" onClick={start} disabled={!invite.whether_ready}>开始考核</button>
       </section>
     </div>

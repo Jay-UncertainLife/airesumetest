@@ -1,5 +1,5 @@
 import { Message, Stage, TurnScore } from "./types";
-import { normalizeStageName, stageRank } from "./stageNames";
+import { BASIC_STAGE, ABILITY_STAGE, normalizeStageName, stageRank } from "./stageNames";
 
 export function buildArenaProgress(input: {
   stages: Stage[];
@@ -13,8 +13,7 @@ export function buildArenaProgress(input: {
   const requiredTurns = requiredTurnsForStage(currentScores);
   const answeredTurns = currentScores.length;
   const stageComplete = Boolean(currentStage && answeredTurns >= requiredTurns && latestScore?.recommendation !== "Cut");
-  const canAdvanceStage = Boolean(currentStage && normalizeStageName(currentStage.name) === "基础关卡" && stageComplete);
-  const canSubmitFinal = Boolean(currentStage && normalizeStageName(currentStage.name) === "能力关卡" && stageComplete);
+  const currentName = currentStage ? normalizeStageName(String(currentStage.name)) : null;
 
   return {
     currentStage,
@@ -23,15 +22,16 @@ export function buildArenaProgress(input: {
     requiredTurns,
     remainingTurns: Math.max(requiredTurns - answeredTurns, 0),
     stageComplete,
-    canAdvanceStage,
-    canSubmitFinal
+    canAdvanceStage: Boolean(currentName === BASIC_STAGE && stageComplete),
+    canSubmitFinal: Boolean(currentName === ABILITY_STAGE && stageComplete)
   };
 }
 
 export function requiredTurnsForStage(scores: TurnScore[]) {
   const latest = scores[scores.length - 1];
   if (!latest) return 2;
-  return latest.average_score >= 80 && latest.recommendation === "通过" ? 2 : 3;
+  if (latest.average_score >= 80 && latest.recommendation === "通过") return 2;
+  return 3;
 }
 
 export function pickCurrentStage(stages: Stage[], messages: Message[]) {

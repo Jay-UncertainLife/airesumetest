@@ -8,15 +8,25 @@ import { addFinalEvaluation, listTurnScores } from "@/lib/repositories/evaluatio
 import { addMessage, listMessages, listWorkspaceMessages } from "@/lib/repositories/messages";
 import { listStages, updateStage } from "@/lib/repositories/stages";
 
+export const dynamic = "force-dynamic";
+
 export async function POST(request: Request, { params }: { params: { id: string } }) {
   try {
-    const body = await readJson<{ final_solution: string; ai_usage_note: string; candidate_token?: string; confirm?: boolean }>(request);
+    const body = await readJson<{
+      final_solution: string;
+      ai_usage_note?: string;
+      candidate_token?: string;
+      confirm?: boolean;
+    }>(request);
     const candidate = await assertCandidateToken(params.id, tokenFromRequest(request, body));
     if (candidate.status === "submitted" || candidate.status === "evaluated") {
       return NextResponse.json({ error: "already_submitted", message: "候选人已提交，不能重复提交。" }, { status: 409 });
     }
     if (!body.confirm) {
       return NextResponse.json({ error: "confirmation_required", message: "最终提交需要二次确认。" }, { status: 400 });
+    }
+    if (!body.final_solution?.trim()) {
+      return NextResponse.json({ error: "empty_final_solution", message: "最终方案不能为空。" }, { status: 400 });
     }
 
     const [stages, currentMessages, currentScores] = await Promise.all([
@@ -34,15 +44,18 @@ export async function POST(request: Request, { params }: { params: { id: string 
 
     await updateStage(progress.currentStage.id, { status: "completed", completed_at: new Date().toISOString() });
     await updateCandidate(candidate.id, {
-      final_solution: body.final_solution,
-      ai_usage_note: body.ai_usage_note,
+      final_solution: body.final_solution.trim(),
+      ai_usage_note: body.ai_usage_note?.trim() ?? "",
       status: "submitted"
     });
     await addEvent({
       candidate_id: params.id,
       stage_id: progress.currentStage.id,
       event_type: "final_submission",
-      raw_content: body.final_solution,
+      raw_content: JSON.stringify({
+        final_solution: body.final_solution.trim(),
+        ai_usage_note: body.ai_usage_note?.trim() ?? ""
+      }),
       ai_summary: "候选人提交最终方案和 AI 使用说明。"
     });
 
@@ -61,8 +74,8 @@ export async function POST(request: Request, { params }: { params: { id: string 
       eventLogs,
       workspaceMessages,
       turnScores,
-      finalSolution: body.final_solution,
-      aiUsageNote: body.ai_usage_note
+      finalSolution: body.final_solution.trim(),
+      aiUsageNote: body.ai_usage_note?.trim() ?? ""
     });
     const evaluation = await addFinalEvaluation({ ...evaluationDraft, candidate_id: params.id });
     await updateCandidate(candidate.id, { status: "evaluated", final_recommendation: evaluation.recommendation });
