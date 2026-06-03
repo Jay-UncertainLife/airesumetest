@@ -5,6 +5,7 @@ import { getFinalEvaluation, listTurnScores } from "@/lib/repositories/evaluatio
 import { listEvents } from "@/lib/repositories/events";
 import { listMessages, listWorkspaceMessages } from "@/lib/repositories/messages";
 import { listStages } from "@/lib/repositories/stages";
+import { buildStageRecords } from "@/lib/stageRecords";
 
 export const dynamic = "force-dynamic";
 
@@ -30,7 +31,8 @@ export async function GET(request: Request, { params }: { params: { id: string }
       eventLogs,
       turnScores,
       agents: roleAgents.length ? roleAgents : enabledAgents,
-      evaluation
+      evaluation,
+      stageRecords: buildStageRecords({ stages, messages, workspaceMessages, eventLogs, turnScores })
     });
   } catch (error) {
     return jsonError(error, "candidate_detail_failed");

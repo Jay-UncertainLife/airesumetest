@@ -32,7 +32,7 @@ export async function analyzePersonaWithDeepSeek(input: {
   });
   const result = await callModel({
     provider: "deepseek",
-    system: "你是招聘场景的人才画像分析官。必须只输出合法 JSON。",
+    system: "你是招聘考核场景的人才画像分析官。必须只输出合法 JSON，不要输出 Markdown 或解释性文字。",
     user,
     temperature: 0.1
   });
@@ -52,11 +52,12 @@ export async function generateAbilityPlan(input: {
     targetRole: input.targetRole,
     targetDifficulty: input.targetDifficulty,
     personaProfile: input.personaProfile ?? {},
-    agents: input.agents
+    agents: input.agents,
+    fallbackDimensions: input.fallbackDimensions
   });
   const result = await callModel({
     provider: input.provider,
-    system: "你是 AI 产品经理岗位考核策略官。必须只输出合法 JSON。",
+    system: "你是 AI 产品经理岗位考核策略官。必须只输出合法 JSON，不要输出 Markdown 或解释性文字。",
     user,
     temperature: 0.2
   });
@@ -75,6 +76,7 @@ export async function generateStageOpening(input: {
   targetRole: string;
   targetDifficulty: string;
   abilityDimensions: AbilityDimension[];
+  agents?: Agent[];
 }) {
   const promptName = input.stage.name === "能力关卡" ? "ability-stage-opening.deepseek.md" : "basic-stage-opening.deepseek.md";
   const user = await loadPrompt(promptName, {
@@ -83,16 +85,17 @@ export async function generateStageOpening(input: {
     targetDifficulty: input.targetDifficulty,
     abilityDimensions: input.abilityDimensions,
     agentParticipation: input.candidate.ability_plan?.agent_participation ?? [],
-    questionStrategy: input.candidate.ability_plan?.question_strategy ?? []
+    questionStrategy: input.candidate.ability_plan?.question_strategy ?? [],
+    agents: input.agents ?? []
   });
   const result = await callModel({
     provider: input.provider,
-    system: "你是 AI 产品经理岗位的 AI 考核官。必须只输出合法 JSON。",
+    system: "你是 AI 产品经理岗位的 AI 考核官。必须只输出合法 JSON，不要输出 Markdown 或解释性文字。",
     user,
     temperature: 0.25
   });
   const parsed = parseJsonObject<{ question: string }>(result.content);
-  if (!parsed.question) throw new Error("Stage opening model response missing question.");
+  if (!parsed.question?.trim()) throw new Error("Stage opening model response missing question.");
   return parsed;
 }
 
@@ -113,7 +116,7 @@ export async function generateWorkspaceReply(input: {
   });
   const result = await callModel({
     provider: input.modelProvider,
-    system: "你是候选人的 AI 思考助手，不是考核官，不得代写最终提交。",
+    system: "你是候选人的 AI 思考助手，不是考核官。你可以帮助拆解思路，但不能替候选人完成正式答案。",
     user,
     temperature: 0.3
   });
@@ -140,7 +143,7 @@ export async function scoreTurn(input: {
   });
   const result = await callModel({
     provider: input.provider,
-    system: "你是 AI 产品经理岗位逐轮评分器。必须只输出合法 JSON。",
+    system: "你是 AI 产品经理岗位逐轮评分器。必须只输出合法 JSON，不要输出 Markdown 或解释性文字。",
     user,
     temperature: 0.1
   });
@@ -182,16 +185,18 @@ export async function generateFollowUp(input: {
   });
   const result = await callModel({
     provider: input.provider,
-    system: "你是 AI 产品经理岗位考核官。必须只输出合法 JSON。",
+    system: "你是 AI 产品经理岗位考核官。必须只输出合法 JSON，不要输出 Markdown 或解释性文字。",
     user,
     temperature: 0.3
   });
-  return parseJsonObject<{
+  const parsed = parseJsonObject<{
     question: string;
     event_type: "ai_question" | "pressure_added";
     risk_tags: string[];
     target_dimensions: string[];
   }>(result.content);
+  if (!parsed.question?.trim()) throw new Error("Follow-up model response missing question.");
+  return parsed;
 }
 
 export async function generateFinalEvaluation(input: {
@@ -219,7 +224,7 @@ export async function generateFinalEvaluation(input: {
   });
   const result = await callModel({
     provider: input.provider,
-    system: "你是 AI 产品经理岗位最终评委。必须只输出合法 JSON。",
+    system: "你是 AI 产品经理岗位最终评委。必须只输出合法 JSON，不要输出 Markdown 或解释性文字。",
     user,
     temperature: 0.1
   });

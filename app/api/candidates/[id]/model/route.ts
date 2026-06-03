@@ -14,7 +14,7 @@ export async function POST(request: Request, { params }: { params: { id: string 
       candidate_id: candidate.id,
       event_type: "model_selected",
       raw_content: `候选人选择模型：${model}`,
-      ai_summary: "模型选择已留痕"
+      ai_summary: "模型选择已留痕。"
     });
     return NextResponse.json({ candidate: updated });
   } catch (error) {

@@ -24,6 +24,8 @@ export default function CandidateArenaPage() {
   const [modelProvider, setModelProvider] = useState<ModelProvider>("deepseek");
   const [loading, setLoading] = useState(false);
   const [workspaceLoading, setWorkspaceLoading] = useState(false);
+  const [assistantOpen, setAssistantOpen] = useState(true);
+  const [assistantLarge, setAssistantLarge] = useState(false);
   const [error, setError] = useState("");
   const [statusMessage, setStatusMessage] = useState("");
   const [nowMs, setNowMs] = useState(Date.now());
@@ -63,13 +65,13 @@ export default function CandidateArenaPage() {
   }, []);
   useEffect(() => {
     if (!loading && !workspaceLoading) return;
-    const timer = window.setInterval(() => load(), 2000);
+    const timer = window.setInterval(() => load(), 2500);
     return () => window.clearInterval(timer);
   }, [load, loading, workspaceLoading]);
 
   async function authedPost(path: string, body: Record<string, unknown>) {
     const session = auth();
-    if (!session) throw new Error("missing session");
+    if (!session) throw new Error("缺少候选人登录态");
     const res = await fetch(path, {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-candidate-token": session.token },
@@ -105,23 +107,29 @@ export default function CandidateArenaPage() {
     if (!data) return;
     setLoading(true);
     setError("");
-    setStatusMessage("正在调用 DeepSeek/OpenAI 生成关卡首题。模型返回前页面会自动刷新关键事件。");
+    setStatusMessage("正在调用 DeepSeek/OpenAI 生成关卡首题。模型返回前请不要关闭页面。");
     try {
       const result = await authedPost(`/api/candidates/${data.candidate.id}/stage/advance`, {});
       if (!result?.message?.content) {
         throw new Error("后端请求完成，但没有返回 AI 首题内容。请检查模型调用日志。");
       }
+      setData((current) => {
+        if (!current) return current;
+        const nextStages = current.stages.map((stage) => (stage.id === result.stage.id ? result.stage : stage));
+        const hasMessage = current.messages.some((message) => message.id === result.message.id);
+        return {
+          ...current,
+          stages: nextStages,
+          messages: hasMessage ? current.messages : [...current.messages, result.message]
+        };
+      });
       await load();
-      setStatusMessage("关卡首题已生成。");
+      setStatusMessage(result.existing ? "已加载已有关卡首题。" : "关卡首题已生成。");
     } catch (err) {
       setError(err instanceof Error ? err.message : "生成关卡首题失败");
     } finally {
       setLoading(false);
     }
-  }
-
-  function switchModel(nextModel: ModelProvider) {
-    setModelProvider(nextModel);
   }
 
   async function sendWorkspaceMessage() {
@@ -147,7 +155,19 @@ export default function CandidateArenaPage() {
       ]
     });
     try {
-      await authedPost(`/api/candidates/${data.candidate.id}/workspace-chat`, { content: submitted, model_provider: modelProvider });
+      const result = await authedPost(`/api/candidates/${data.candidate.id}/workspace-chat`, {
+        content: submitted,
+        model_provider: modelProvider
+      });
+      setData((current) => {
+        if (!current) return current;
+        return {
+          ...current,
+          workspaceMessages: current.workspaceMessages
+            .filter((message) => !message.id.startsWith("optimistic-"))
+            .concat([result.userMessage, result.modelMessage].filter(Boolean))
+        };
+      });
       await load();
       setStatusMessage("模型交互回复已生成。");
     } catch (err) {
@@ -182,7 +202,7 @@ export default function CandidateArenaPage() {
         </section>
       ) : null}
 
-      <div className="arena-grid">
+      <div className="arena-grid arena-grid-main">
         <aside className="panel">
           <p className="badge">{data.candidate.target_role}</p>
           <h2>{currentStage.name}</h2>
@@ -232,7 +252,11 @@ export default function CandidateArenaPage() {
             {stageMessages.length === 0 ? (
               <div className="message ai">
                 <strong>AI 考核官</strong><br />
-                {loading ? "正在等待模型生成题目，请不要关闭页面。" : isPrepStage ? "当前仍在面试关卡准备。请点击左侧“生成基础关卡首题”，系统会调用模型生成正式题目。" : "本关尚未生成首题。请点击左侧按钮触发 AI 出题。"}
+                {loading
+                  ? "正在等待模型生成题目，请不要关闭页面。"
+                  : isPrepStage
+                    ? "当前仍在面试关卡准备。请点击左侧“生成基础关卡首题”，系统会调用模型生成正式题目。"
+                    : "本关尚未生成首题。请点击左侧按钮触发 AI 出题。"}
               </div>
             ) : null}
             {stageMessages.map((message) => (
@@ -246,39 +270,12 @@ export default function CandidateArenaPage() {
             <label>正式回应</label>
             <textarea className="textarea" value={answer} onChange={(event) => setAnswer(event.target.value)} />
           </div>
-          <button className="btn" onClick={sendAnswer} disabled={loading}>
+          <button className="btn" onClick={sendAnswer} disabled={loading || stageMessages.length === 0}>
             {loading ? "正在调用模型评分并追问..." : "提交正式回应"}
           </button>
         </section>
 
         <aside className="panel">
-          <h2>模型交互工作区</h2>
-          <div className="field">
-            <label>模型</label>
-            <select className="select" value={modelProvider} onChange={(event) => switchModel(event.target.value as ModelProvider)}>
-              <option value="deepseek">DeepSeek</option>
-              <option value="openai">OpenAI</option>
-            </select>
-          </div>
-          <div className="chat workspace-chat">
-            {workspaceMessages.map((message) => (
-              <div key={message.id} className={`message ${message.role === "model" ? "ai" : "candidate"}`}>
-                <strong>{message.role === "model" ? "模型助手" : "候选人"}</strong><br />
-                {message.content}
-              </div>
-            ))}
-            {workspaceLoading ? (
-              <div className="message ai">
-                <strong>模型助手</strong><br />
-                已收到问题，正在等待 {modelProvider} 返回。
-              </div>
-            ) : null}
-          </div>
-          <textarea className="textarea" value={workspaceInput} onChange={(event) => setWorkspaceInput(event.target.value)} />
-          <button className="btn secondary" onClick={sendWorkspaceMessage} disabled={workspaceLoading}>
-            {workspaceLoading ? "模型思考中..." : `发送给 ${modelProvider}`}
-          </button>
-
           <h2>维度评分表</h2>
           <div className="timeline">
             {data.turnScores.map((score) => (
@@ -297,6 +294,49 @@ export default function CandidateArenaPage() {
           </div>
         </aside>
       </div>
+
+      <button className="assistant-launcher" onClick={() => setAssistantOpen(true)}>AI 小助手</button>
+      {assistantOpen ? (
+        <section className={`assistant-dock ${assistantLarge ? "large" : ""}`}>
+          <div className="assistant-head">
+            <strong>模型交互小助手</strong>
+            <div className="actions">
+              <button className="btn secondary" onClick={() => setAssistantLarge((value) => !value)}>{assistantLarge ? "缩小" : "放大"}</button>
+              <button className="btn secondary" onClick={() => setAssistantOpen(false)}>关闭</button>
+            </div>
+          </div>
+          <div className="field">
+            <label>模型</label>
+            <select className="select" value={modelProvider} onChange={(event) => setModelProvider(event.target.value as ModelProvider)}>
+              <option value="deepseek">DeepSeek</option>
+              <option value="openai">OpenAI</option>
+            </select>
+          </div>
+          <div className="chat workspace-chat assistant-chat">
+            {workspaceMessages.map((message) => (
+              <div key={message.id} className={`message ${message.role === "model" ? "ai" : "candidate"}`}>
+                <strong>{message.role === "model" ? "模型助手" : "候选人"}</strong><br />
+                {message.content}
+              </div>
+            ))}
+            {workspaceLoading ? (
+              <div className="message ai">
+                <strong>模型助手</strong><br />
+                已收到问题，正在等待 {modelProvider} 返回。
+              </div>
+            ) : null}
+          </div>
+          <textarea
+            className="textarea"
+            value={workspaceInput}
+            onChange={(event) => setWorkspaceInput(event.target.value)}
+            placeholder="输入你的思考问题，系统会调用后端配置的大模型并留痕。"
+          />
+          <button className="btn secondary" onClick={sendWorkspaceMessage} disabled={workspaceLoading}>
+            {workspaceLoading ? "模型思考中..." : `发送给 ${modelProvider}`}
+          </button>
+        </section>
+      ) : null}
     </div>
   );
 }

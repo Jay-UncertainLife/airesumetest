@@ -54,7 +54,7 @@ export async function POST(request: Request, { params }: { params: { id: string 
       stage_id: currentStage.id,
       event_type: "candidate_response",
       raw_content: body.content,
-      ai_summary: "候选人提交了一次关卡回应"
+      ai_summary: "候选人提交了一次关卡回应。"
     });
 
     const turnScoreDraft = await scoreTurn({
@@ -91,13 +91,15 @@ export async function POST(request: Request, { params }: { params: { id: string 
         stage_id: currentStage.id,
         event_type: "human_review_required",
         raw_content: JSON.stringify(turnScore),
-        ai_summary: `本轮得分 ${turnScore.average_score}，低于阈值，进入人工复核提示`,
+        ai_summary: `本轮得分 ${turnScore.average_score}，低于阈值，进入人工复核提示。`,
         risk_tags: ["低分复核", ...turnScore.risk_tags]
       });
     }
 
     const allScores = await listTurnScores(params.id);
-    const currentStagePasses = allScores.filter((item) => item.stage_id === currentStage.id && item.recommendation === "通过" && item.average_score >= 80);
+    const currentStagePasses = allScores.filter(
+      (item) => item.stage_id === currentStage.id && item.recommendation === "通过" && item.average_score >= 80
+    );
     if (currentStage.name === "能力关卡" && currentStagePasses.length >= 3) {
       await updateStage(currentStage.id, { status: "completed", completed_at: new Date().toISOString() });
       const messages = await listMessages(params.id);
@@ -135,9 +137,12 @@ export async function POST(request: Request, { params }: { params: { id: string 
     }
 
     const agents = await listAgents();
-    const agent = agents.find((item) => item.status === "enabled" && item.target_role === candidate.target_role && item.agent_role === "lead_examiner") ??
+    const agent =
+      agents.find((item) => item.status === "enabled" && item.target_role === candidate.target_role && item.agent_role === "lead_examiner") ??
       agents.find((item) => item.status === "enabled") ??
       agents[0];
+    if (!agent) return NextResponse.json({ error: "agent_not_configured" }, { status: 400 });
+
     const history = await listMessages(params.id);
     const followUp = await generateFollowUp({
       provider: selectedModel,
@@ -154,7 +159,7 @@ export async function POST(request: Request, { params }: { params: { id: string 
       role: "ai",
       ai_role: "examiner",
       model_provider: selectedModel,
-      agent_id: agent?.id,
+      agent_id: agent.id,
       content: followUp.question
     });
     await addEvent({
@@ -162,7 +167,7 @@ export async function POST(request: Request, { params }: { params: { id: string 
       stage_id: currentStage.id,
       event_type: followUp.event_type,
       raw_content: followUp.question,
-      ai_summary: "AI 考核官基于上一轮回答继续追问",
+      ai_summary: "AI 考核官基于上一轮回答继续追问。",
       risk_tags: followUp.risk_tags
     });
     return NextResponse.json({ candidateMessage, aiMessage, turnScore });

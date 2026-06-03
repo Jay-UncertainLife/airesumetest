@@ -101,11 +101,14 @@ create table if not exists final_evaluations (
   recommendation text,
   reason_summary text,
   evidence_summary jsonb,
+  reviewer_notes text,
   human_review_result text,
   human_review_comment text,
   model_provider text,
   created_at timestamptz default now()
 );
+
+alter table final_evaluations add column if not exists reviewer_notes text;
 
 create table if not exists agents (
   id uuid primary key default gen_random_uuid(),
@@ -158,20 +161,20 @@ select
   '[
     {"ai_role":"AI 产品负责人考核官","level":"P3","reason":"主导基础关卡，判断业务目标和产品闭环。"},
     {"ai_role":"产品闭环评委","level":"P2","reason":"辅助检查用户场景、MVP 取舍和反馈闭环。"},
-    {"ai_role":"压力与落地评委","level":"P1","reason":"轻量提醒资源边界。"},
-    {"ai_role":"证据链评委","level":"P3","reason":"记录全过程并做可复核评分。"}
+    {"ai_role":"压力与落地评委","level":"P1","reason":"轻量提醒资源边界，避免基础关过早过压。"},
+    {"ai_role":"证据链评委","level":"P3","reason":"记录全过程，并对本关进行可复核评分。"}
   ]'::jsonb,
   '[
     {"ai_role":"AI 产品负责人考核官","level":"P3","reason":"持续追问业务目标、价值判断和优先级。"},
     {"ai_role":"产品闭环评委","level":"P3","reason":"重点检查场景、流程、MVP 取舍和反馈闭环。"},
-    {"ai_role":"压力与落地评委","level":"P2","reason":"加入时间、人力、技术限制，观察应变。"},
+    {"ai_role":"压力与落地评委","level":"P2","reason":"加入时间、人力、技术限制，观察应变能力。"},
     {"ai_role":"证据链评委","level":"P3","reason":"按 P01-P08 能力维度评分并生成复核证据。"}
   ]'::jsonb
 where not exists (select 1 from job_roles where name = 'AI 产品经理');
 
 insert into agents (name, target_role, agent_role, model_provider, model_name, persona, responsibility, exam_goal, opening_prompt, follow_up_rules, pressure_rules, scoring_rubric, cut_rules, status)
 select * from (values
-  ('AI 产品负责人考核官','AI 产品经理','lead_examiner','deepseek','deepseek-chat','直接、结构化、强闭环意识','主持关卡推进，综合能力维度与逐轮得分决定继续追问、进入下一关或 Cut。','评估候选人是否具备 AI 产品经理的场景理解、MVP 收敛和业务判断能力。','请候选人在限定时间内设计一个面向招聘考核场景的 AI 产品 MVP。','围绕用户、场景、闭环、取舍、AI 原生性追问。','追加时间、人力、KPI、误判和证据约束。','按 AI 产品经理动态能力组合逐轮评分。','如果候选人连续无法说明核心闭环、取舍失控或方案不可落地，建议 Cut。','enabled'),
+  ('AI 产品负责人考核官','AI 产品经理','lead_examiner','deepseek','deepseek-chat','直接、追问型、偏业务结果导向','主持关卡推进，综合能力维度与逐轮得分决定继续追问、进入下一关或 Cut。','评估候选人是否具备 AI 产品经理的场景理解、MVP 收敛和业务判断能力。','请候选人在限定时间内设计一个面向招聘考核场景的 AI 产品 MVP。','围绕用户、场景、闭环、取舍、AI 原生性追问。','追加时间、人力、KPI、误判和证据约束。','按 AI 产品经理动态能力组合逐轮评分。','如果候选人连续无法说明核心闭环、取舍失控或方案不可落地，建议 Cut。','enabled'),
   ('产品闭环评委','AI 产品经理','product_judge','deepseek','deepseek-chat','冷静、追根究底、关注 MVP 边界','评估产品定位、用户场景、最小闭环和功能取舍。','识别候选人是否能把 AI 产品从想法压缩成可演示闭环。','聚焦 AI 产品 MVP 的闭环完整度。','追问入口、核心动作、输出物、审核价值和砍掉项。','要求候选人用更少页面、更少接口完成同样闭环。','产品闭环、优先级判断、AI 原生程度。','若持续大而全或无法定义最小闭环，标记高风险。','enabled'),
   ('压力与落地评委','AI 产品经理','pressure_judge','deepseek','deepseek-chat','强压、现实、资源约束导向','制造时间、人力、技术、老板改需求等约束，观察候选人应变。','判断候选人在两周、两人、现成 API 条件下是否能落地。','把方案压到两周可演示。','追问技术边界、人力排期、验收标准和风险预案。','持续加入资源限制、误判风险、数据留痕要求。','约束下应变、风险识别、落地能力。','若无法取舍或无法说明落地路径，建议继续观察或 Cut。','enabled'),
   ('证据链评委','AI 产品经理','evidence_judge','openai','gpt-4o-mini','审慎、证据导向、关注可复核性','评估过程记录、模型切换留痕、AI 使用说明和人工复核依据。','判断候选人是否理解 AI 考核产品的信任与可解释问题。','关注过程证据与审核可信度。','追问如何留痕、如何回放、如何防止纯 AI 代答、如何处理误判。','取消录屏或压缩日志后，要求候选人重建证据链。','证据链、风险识别、AI 使用边界。','若完全忽略证据记录和人工复核，标记高风险。','enabled')

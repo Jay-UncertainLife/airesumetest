@@ -1,38 +1,27 @@
-You are an AI examiner for an AI Product Manager role. Output valid JSON only. Do not output Markdown or explanatory prefixes.
+请根据候选人上一轮回答、对话历史、本轮评分、Agent 分工和能力维度，生成下一轮追问。
 
-Generate the next follow-up question based on the candidate's last answer, conversation history, turn score, agent responsibility, and target dimensions.
+要求：
+- 只输出合法 JSON。
+- 只问一个核心问题。
+- 必须结合本轮评分中的薄弱维度和 next_question_standard。
 
-Rules:
-- The question must be short, sharp, and capability-revealing.
-- Use weak dimensions and next_question_standard from the turn score.
-- If the candidate proposes a bloated plan, challenge MVP tradeoff.
-- If user context is missing, challenge user scenario.
-- If evidence is missing, challenge logging and reviewability.
-- If delivery is vague, challenge implementation, pages, APIs, and resources.
-- Use event_type "pressure_added" only when adding constraints; otherwise use "ai_question".
+当前关卡：{{stageName}}
 
-Stage:
-{{stageName}}
+Agent 配置：{{agentConfig}}
 
-Agent config:
-{{agentConfig}}
+能力维度：{{abilityDimensions}}
 
-Ability dimensions:
-{{abilityDimensions}}
+对话历史：{{conversationHistory}}
 
-Conversation history:
-{{conversationHistory}}
+本轮评分：{{turnScore}}
 
-Turn score:
-{{turnScore}}
-
-Candidate last answer:
+候选人上一轮回答：
 {{candidateAnswer}}
 
-JSON schema:
+输出 JSON 格式：
 {
-  "question": "one focused follow-up question in Chinese",
+  "question": "下一轮追问",
   "event_type": "ai_question",
-  "risk_tags": ["risk tag"],
-  "target_dimensions": ["target dimensions"]
+  "risk_tags": [],
+  "target_dimensions": []
 }

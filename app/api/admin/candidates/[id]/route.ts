@@ -5,6 +5,7 @@ import { getFinalEvaluation, listTurnScores } from "@/lib/repositories/evaluatio
 import { listMessages, listWorkspaceMessages } from "@/lib/repositories/messages";
 import { listStages } from "@/lib/repositories/stages";
 import { jsonError } from "@/lib/apiUtils";
+import { buildStageRecords } from "@/lib/stageRecords";
 
 export const dynamic = "force-dynamic";
 
@@ -20,7 +21,8 @@ export async function GET(_: Request, { params }: { params: { id: string } }) {
       listTurnScores(params.id),
       getFinalEvaluation(params.id)
     ]);
-    return NextResponse.json({ candidate, stages, messages, workspaceMessages, eventLogs, turnScores, finalEvaluation });
+    const stageRecords = buildStageRecords({ stages, messages, workspaceMessages, eventLogs, turnScores });
+    return NextResponse.json({ candidate, stages, messages, workspaceMessages, eventLogs, turnScores, finalEvaluation, stageRecords });
   } catch (error) {
     return jsonError(error, "admin_candidate_detail_failed");
   }
