@@ -62,7 +62,7 @@ export default function CandidateArenaPage() {
       setError(next.message ?? next.error ?? "读取考核数据失败");
       return;
     }
-    setData(next);
+    setData((current) => mergeCandidateData(current, next));
     setModelProvider(next.candidate.selected_model ?? "deepseek");
   }, [auth]);
 
@@ -354,4 +354,28 @@ function formatDuration(seconds: number) {
   const mins = Math.floor(seconds / 60);
   const secs = seconds % 60;
   return `${mins}:${String(secs).padStart(2, "0")}`;
+}
+
+function mergeCandidateData(current: CandidateData | null, next: CandidateData): CandidateData {
+  if (!current || current.candidate.id !== next.candidate.id) return next;
+  return {
+    ...next,
+    stages: mergeById(current.stages, next.stages),
+    messages: mergeById(current.messages, next.messages),
+    workspaceMessages: mergeById(current.workspaceMessages, next.workspaceMessages),
+    eventLogs: mergeById(current.eventLogs, next.eventLogs),
+    turnScores: mergeById(current.turnScores, next.turnScores),
+    agents: next.agents.length ? next.agents : current.agents
+  };
+}
+
+function mergeById<T extends { id: string; created_at?: string }>(previous: T[], incoming: T[]) {
+  const merged = new Map<string, T>();
+  for (const item of previous) merged.set(item.id, item);
+  for (const item of incoming) merged.set(item.id, item);
+  return Array.from(merged.values()).sort((a, b) => {
+    const left = a.created_at ? new Date(a.created_at).getTime() : 0;
+    const right = b.created_at ? new Date(b.created_at).getTime() : 0;
+    return left - right;
+  });
 }
