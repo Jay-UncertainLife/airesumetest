@@ -598,6 +598,138 @@ select {
   display: grid;
 }
 
+.candidate-arena-shell {
+  max-width: 1280px;
+}
+
+.stage-hero {
+  align-items: flex-start;
+  display: flex;
+  gap: 24px;
+  justify-content: space-between;
+  margin-bottom: 18px;
+}
+
+.stage-workspace {
+  display: grid;
+  gap: 18px;
+  grid-template-columns: minmax(0, 1fr) 340px;
+}
+
+.question-panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 24px;
+}
+
+.stage-status-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.stage-answer-textarea {
+  min-height: 420px;
+}
+
+.stage-primary-action {
+  margin-top: 14px;
+  width: 100%;
+}
+
+.stage-evidence-panel {
+  align-self: start;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 18px;
+  position: sticky;
+  top: 18px;
+}
+
+.session-card {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  margin-top: 12px;
+  padding: 12px;
+}
+
+.session-card.risk {
+  background: #fff1f0;
+  border-color: #ffccc7;
+}
+
+.review-tabs {
+  display: grid;
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.profile-grid {
+  display: grid;
+  gap: 18px;
+  grid-template-columns: 1fr 1fr;
+}
+
+.review-question-card {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  margin-top: 14px;
+  padding: 16px;
+}
+
+.review-question-card.risk {
+  background: #fff1f0;
+  border-color: #ffccc7;
+}
+
+.stage-evaluation-list {
+  margin-top: 18px;
+}
+
+.floating-assistant {
+  bottom: 24px;
+  max-height: 78vh;
+  min-height: 360px;
+  min-width: 320px;
+  position: fixed;
+  resize: both;
+  right: 24px;
+  width: 420px;
+  z-index: 50;
+}
+
+.floating-assistant .assistant-head {
+  cursor: move;
+}
+
+.icon-button {
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  font-size: 24px;
+}
+
+@media (max-width: 900px) {
+  .stage-hero,
+  .stage-workspace {
+    display: block;
+  }
+
+  .stage-evidence-panel {
+    margin-top: 18px;
+    position: static;
+  }
+
+  .floating-assistant {
+    left: 12px;
+    right: 12px !important;
+    width: auto;
+  }
+}
+
 @media (max-width: 900px) {
   .container {
     padding: 24px 16px;

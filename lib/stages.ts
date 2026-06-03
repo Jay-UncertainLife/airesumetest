@@ -1,17 +1,65 @@
-import { ParticipationLevel, StageName } from "./types";
+import { AbilityDimension, ParticipationLevel, StageName } from "./types";
+
+export const basicStageDimensions: AbilityDimension[] = [
+  {
+    key: "task_reception",
+    code: "B01",
+    name: "任务接收关",
+    weight: 20,
+    target_level: "L2",
+    description: "是否理解目标、对象、交付物和限制。",
+    observation: "能否读懂任务并拆出边界。"
+  },
+  {
+    key: "information_structuring",
+    code: "B02",
+    name: "信息整理关",
+    weight: 20,
+    target_level: "L2",
+    description: "是否能把混乱信息整理成可执行结构。",
+    observation: "能否输出结构化任务、步骤和依赖。"
+  },
+  {
+    key: "ai_usage_trace",
+    code: "B03",
+    name: "AI 使用留痕关",
+    weight: 20,
+    target_level: "L2",
+    description: "是否透明记录 AI 使用、采纳、否定和修改。",
+    observation: "能否说明 AI 辅助边界和人工判断。"
+  },
+  {
+    key: "change_response",
+    code: "B04",
+    name: "变化响应关",
+    weight: 20,
+    target_level: "L2",
+    description: "是否能在新限制下做取舍和调整。",
+    observation: "能否面对约束变化重新排序。"
+  },
+  {
+    key: "final_delivery",
+    code: "B05",
+    name: "最终交付关",
+    weight: 20,
+    target_level: "L2",
+    description: "是否能交付清楚、可复盘、可接手的结果。",
+    observation: "能否形成可审核交付物。"
+  }
+];
 
 export const stageCopy: Record<StageName, { goal: string; task: string }> = {
   面试关卡准备: {
-    goal: "确认目标岗位、难度、候选人画像和本次考核规则，准备生成正式关卡题目。",
-    task: "系统将基于岗位配置、候选人画像、简历和面试评价生成基础关卡与能力关卡的题目。"
+    goal: "确认候选人画像、岗位和考核规则，准备进入正式作答。",
+    task: "系统将基于候选人画像、简历、面试评价和岗位要求生成正式题目。"
   },
   基础关卡: {
-    goal: "确认候选人是否理解角色职责、业务目标、用户场景、AI 介入点和 MVP 最小闭环。",
-    task: "围绕 AI 考核产品小闭环，说明目标用户、核心场景、AI 介入点、MVP、首批功能范围和取舍。"
+    goal: "考察任务接收、信息整理、AI 使用留痕、变化响应和最终交付能力。",
+    task: "围绕真实工作任务完成结构化作答，并说明 AI 使用过程。"
   },
   能力关卡: {
-    goal: "在真实约束下观察判断力、抗压能力、优先级能力、证据链设计和 AI 使用边界。",
-    task: "在两周上线、研发资源有限、只能调用现成模型 API 的约束下，调整方案并说明取舍和落地路径。"
+    goal: "考察岗位专项能力、约束下取舍、证据链、风险控制和落地能力。",
+    task: "在真实业务限制中输出可执行方案，并说明取舍、验证和交付路径。"
   }
 };
 
@@ -21,13 +69,26 @@ export const stageDurations: Record<StageName, number> = {
   能力关卡: 12 * 60
 };
 
+export const requiredQuestionsByStage = {
+  basic: 5,
+  ability: 3
+} as const;
+
 export function calculateTimeCoefficient(elapsedSeconds: number, targetSeconds: number) {
-  if (!targetSeconds) return 1;
-  if (elapsedSeconds <= targetSeconds * 1.1) return 1;
+  if (!targetSeconds || elapsedSeconds <= targetSeconds * 1.1) return 1;
   if (elapsedSeconds <= targetSeconds * 1.25) return 0.95;
   if (elapsedSeconds <= targetSeconds * 1.5) return 0.85;
   if (elapsedSeconds <= targetSeconds * 2) return 0.7;
   return 0.5;
+}
+
+export function timeoutLevel(elapsedSeconds: number, targetSeconds: number) {
+  if (!targetSeconds || elapsedSeconds <= targetSeconds) return "normal";
+  if (elapsedSeconds <= targetSeconds * 1.1) return "slight";
+  if (elapsedSeconds <= targetSeconds * 1.25) return "minor";
+  if (elapsedSeconds <= targetSeconds * 1.5) return "obvious";
+  if (elapsedSeconds <= targetSeconds * 2) return "serious";
+  return "critical";
 }
 
 export const difficultyDefinitions = [

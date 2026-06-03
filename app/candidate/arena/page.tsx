@@ -1,60 +1,75 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { PointerEvent } from "react";
 import { useRouter } from "next/navigation";
 import FlowGuide from "@/app/components/FlowGuide";
-import { buildArenaProgress } from "@/lib/arenaProgress";
-import { stageCopy } from "@/lib/stages";
-import { ABILITY_STAGE, BASIC_STAGE, PREP_STAGE, normalizeStageName } from "@/lib/stageNames";
-import { Agent, Candidate, EventLog, Message, ModelProvider, Stage, TurnScore, WorkspaceMessage } from "@/lib/types";
+import { ModelProvider } from "@/lib/types";
 
-type ArenaProgress = ReturnType<typeof buildArenaProgress>;
+type StageCurrent = {
+  candidate: { id: string; name: string; target_role?: string; selected_model?: ModelProvider; status: string };
+  activeProgress?: {
+    id: string;
+    stage_key: "basic" | "ability" | "final";
+    current_state: string;
+    current_question_index?: number;
+    current_dimension?: string;
+    last_error?: string;
+    score_status?: string;
+  };
+  stage_key: "basic" | "ability" | "final";
+  stage_name: string;
+  current_question?: {
+    question_id: string;
+    question_text: string;
+    target_duration_seconds?: number;
+    status: string;
+  } | null;
+  draft?: { draft_text?: string; ai_usage_note_draft?: string } | null;
+  answer?: { answer_text?: string; ai_usage_note?: string } | null;
+  latestScore?: { average_score?: number; score_status?: string; reason_summary?: string; risk_tags?: string[] } | null;
+  questions: Array<{ question_id: string; stage_key: string; question_text: string; created_at: string; status: string }>;
+  answers: Array<{ answer_id: string; question_id: string; answer_text?: string; ai_usage_note?: string; submitted_at: string }>;
+  scores: Array<{ id: string; question_id?: string; average_score?: number; score_status?: string; reason_summary?: string; created_at: string }>;
+  chatMessages: Array<{ message_id: string; role: "candidate" | "model"; content: string; created_at: string }>;
+  timing: {
+    elapsed_seconds: number;
+    target_duration_seconds: number;
+    remaining_seconds: number;
+    is_overtime: boolean;
+    should_auto_submit: boolean;
+    timeout_level: string;
+  };
+  button: { label: string; action: string; disabled: boolean };
+};
 
-type CandidateData = {
-  candidate: Candidate;
-  stages: Stage[];
-  messages: Message[];
-  workspaceMessages: WorkspaceMessage[];
-  eventLogs: EventLog[];
-  turnScores: TurnScore[];
-  agents: Agent[];
-  progress?: ArenaProgress;
+const stageGoal: Record<string, string> = {
+  basic: "基础关卡会考察任务接收、信息整理、AI 使用留痕、变化响应和最终交付能力。",
+  ability: "能力关卡会结合岗位要求，考察约束下取舍、证据链、风险控制和落地能力。",
+  final: "最终评价用于提交最终方案，并生成更新后的候选人画像和评审报告。"
 };
 
 export default function CandidateArenaPage() {
   const router = useRouter();
-  const [data, setData] = useState<CandidateData | null>(null);
+  const [data, setData] = useState<StageCurrent | null>(null);
   const [answer, setAnswer] = useState("");
   const [aiUsageNote, setAiUsageNote] = useState("");
   const [assistantInput, setAssistantInput] = useState("");
   const [modelProvider, setModelProvider] = useState<ModelProvider>("deepseek");
-  const [loading, setLoading] = useState(false);
-  const [assistantLoading, setAssistantLoading] = useState(false);
+  const [loadingAction, setLoadingAction] = useState<string | null>(null);
   const [assistantOpen, setAssistantOpen] = useState(false);
-  const [assistantLarge, setAssistantLarge] = useState(false);
+  const [assistantLoading, setAssistantLoading] = useState(false);
+  const [assistantPos, setAssistantPos] = useState({ x: 24, y: 24 });
   const [error, setError] = useState("");
-  const [statusMessage, setStatusMessage] = useState("");
-  const [nowMs, setNowMs] = useState(Date.now());
+  const dragRef = useRef<{ startX: number; startY: number; originX: number; originY: number } | null>(null);
+  const lastSavedRef = useRef("");
 
-  const localProgress = useMemo(() => (data ? buildArenaProgress(data) : null), [data]);
-  const progress = data?.progress ?? localProgress;
-  const currentStage = progress?.currentStage ?? undefined;
-  const currentStageName = currentStage ? normalizeStageName(String(currentStage.name)) : PREP_STAGE;
+  const activeStep = data?.stage_key === "ability" ? 4 : data?.stage_key === "final" ? 5 : 3;
+  const isBusy = Boolean(loadingAction) || ["GENERATING_FIRST_QUESTION", "GENERATING_NEXT_QUESTION", "SUBMITTING_ANSWER", "SCORING"].includes(data?.activeProgress?.current_state ?? "");
+  const canEdit = Boolean(data?.current_question) && !data?.answer && !isBusy && ["ANSWERING", "ANSWERING_OVERTIME"].includes(data?.activeProgress?.current_state ?? "");
+  const stageQuestions = useMemo(() => data?.questions.filter((q) => q.stage_key === data.stage_key) ?? [], [data]);
 
-  const stageMessages = useMemo(
-    () => (currentStage ? data?.messages.filter((message) => message.stage_id === currentStage.id) ?? [] : []),
-    [currentStage, data?.messages]
-  );
-  const stageScores = useMemo(
-    () => (currentStage ? data?.turnScores.filter((score) => score.stage_id === currentStage.id) ?? [] : []),
-    [currentStage, data?.turnScores]
-  );
-  const assistantMessages = useMemo(
-    () => (currentStage ? data?.workspaceMessages.filter((message) => message.stage_id === currentStage.id) ?? [] : []),
-    [currentStage, data?.workspaceMessages]
-  );
-
-  const auth = useCallback(() => {
+  const session = useCallback(() => {
     const candidateId = localStorage.getItem("candidate_id");
     const token = localStorage.getItem("candidate_token");
     if (!candidateId || !token) {
@@ -65,215 +80,203 @@ export default function CandidateArenaPage() {
   }, [router]);
 
   const load = useCallback(async () => {
-    const session = auth();
-    if (!session) return;
-    const res = await fetch(`/api/candidates/${session.candidateId}`, {
+    const auth = session();
+    if (!auth) return;
+    const res = await fetch(`/api/candidate/stage/current?candidate_id=${auth.candidateId}`, {
       cache: "no-store",
-      headers: { "x-candidate-token": session.token }
+      headers: { "x-candidate-token": auth.token }
     });
     const next = await res.json();
     if (!res.ok) {
-      setError(next.message ?? next.error ?? "读取考核数据失败");
+      setError(next.message ?? next.error ?? "读取考核状态失败");
       return;
     }
-    setData((current) => mergeCandidateData(current, next));
-    setModelProvider(next.candidate.selected_model ?? "deepseek");
-  }, [auth]);
+    setData(next);
+    setModelProvider(next.candidate?.selected_model ?? "deepseek");
+    setAnswer((current) => {
+      if (current && next.current_question?.question_id === data?.current_question?.question_id) return current;
+      return next.draft?.draft_text ?? next.answer?.answer_text ?? "";
+    });
+    setAiUsageNote((current) => {
+      if (current && next.current_question?.question_id === data?.current_question?.question_id) return current;
+      return next.draft?.ai_usage_note_draft ?? next.answer?.ai_usage_note ?? "";
+    });
+  }, [data?.current_question?.question_id, session]);
 
   useEffect(() => {
+    const saved = localStorage.getItem("assistant_dock_pos");
+    if (saved) {
+      try {
+        setAssistantPos(JSON.parse(saved));
+      } catch {
+        // ignore stale layout data
+      }
+    }
     load();
   }, [load]);
 
   useEffect(() => {
-    const timer = window.setInterval(() => setNowMs(Date.now()), 1000);
+    const shouldPoll = isBusy || ["GENERATION_FAILED", "SCORE_FAILED"].includes(data?.activeProgress?.current_state ?? "");
+    if (!shouldPoll) return;
+    const timer = window.setInterval(load, 3500);
     return () => window.clearInterval(timer);
-  }, []);
+  }, [data?.activeProgress?.current_state, isBusy, load]);
 
   useEffect(() => {
-    if (!loading && !assistantLoading) return;
-    const timer = window.setInterval(() => load(), 2500);
+    if (!canEdit || !data?.current_question) return;
+    const timer = window.setInterval(() => {
+      const payload = `${data.current_question?.question_id}:${answer}:${aiUsageNote}`;
+      if (payload === lastSavedRef.current) return;
+      lastSavedRef.current = payload;
+      void post("/api/candidate/stage/save-draft", {
+        draft_text: answer,
+        ai_usage_note_draft: aiUsageNote
+      }, false);
+    }, 30000);
     return () => window.clearInterval(timer);
-  }, [load, loading, assistantLoading]);
+  }, [answer, aiUsageNote, canEdit, data?.current_question]);
 
-  async function authedPost(path: string, body: Record<string, unknown>) {
-    const session = auth();
-    if (!session) throw new Error("缺少候选人登录态");
+  useEffect(() => {
+    if (!canEdit || !data?.timing.should_auto_submit) return;
+    void submitAnswer("auto_timeout");
+  }, [canEdit, data?.timing.should_auto_submit]);
+
+  async function post(path: string, body: Record<string, unknown>, reload = true) {
+    const auth = session();
+    if (!auth) throw new Error("缺少候选人登录态");
     const res = await fetch(path, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "x-candidate-token": session.token },
-      body: JSON.stringify({ ...body, candidate_token: session.token })
+      headers: { "Content-Type": "application/json", "x-candidate-token": auth.token },
+      body: JSON.stringify({
+        ...body,
+        candidate_id: auth.candidateId,
+        candidate_token: auth.token,
+        model_provider: modelProvider
+      })
     });
     const json = await res.json();
     if (!res.ok) throw new Error(json.message ?? json.error ?? "请求失败");
+    if (reload) {
+      setData(json);
+      await load();
+    }
     return json;
   }
 
-  async function startOrAdvanceStage() {
-    if (!data) return;
-    setLoading(true);
+  async function runAction(action: string) {
+    if (action === "done") {
+      router.push("/candidate/done");
+      return;
+    }
+    if (action === "final_submit") {
+      router.push("/candidate/final-submit");
+      return;
+    }
+    setLoadingAction(action);
     setError("");
-    setStatusMessage(currentStageName === PREP_STAGE ? "正在调用模型生成基础关卡首题，请不要关闭页面。" : "正在进入下一关并生成首题。");
     try {
-      const result = await authedPost(`/api/candidates/${data.candidate.id}/stage/advance`, {});
-      if (!result?.message?.content) throw new Error("后端未返回 AI 题目内容。");
-      setData((current) => current && {
-        ...current,
-        stages: mergeById(current.stages, [result.stage].filter(Boolean)),
-        messages: mergeById(current.messages, [result.message].filter(Boolean)),
-        progress: result.progress ?? current.progress
-      });
-      await load();
-      setStatusMessage(result.existing ? "已加载当前关卡题目。" : "关卡题目已生成并保存。");
+      if (action === "start_first_question") await post("/api/candidate/stage/start-first-question", {});
+      if (action === "score_answer") await post("/api/candidate/stage/score-answer", {});
+      if (action === "next_question") await post("/api/candidate/stage/next-question", {});
     } catch (err) {
-      setError(err instanceof Error ? err.message : "生成关卡题目失败");
+      setError(err instanceof Error ? err.message : "操作失败");
     } finally {
-      setLoading(false);
+      setLoadingAction(null);
     }
   }
 
-  async function submitAnswer() {
-    if (!answer.trim() || !data || !currentStage) return;
-    setLoading(true);
+  async function submitAnswer(submitType: "manual" | "auto_timeout" = "manual") {
+    if (!data?.current_question) return;
+    setLoadingAction(submitType === "auto_timeout" ? "auto_submit" : "submit_answer");
     setError("");
-    setStatusMessage("正在调用模型评分并生成追问，请不要关闭页面。");
     try {
-      const result = await authedPost(`/api/candidates/${data.candidate.id}/messages`, {
-        content: answer,
+      await post("/api/candidate/stage/submit-answer", {
+        answer_text: answer,
         ai_usage_note: aiUsageNote,
-        model_provider: modelProvider
+        submit_type: submitType,
+        client_submit_id: `${data.current_question.question_id}-${Date.now()}`
       });
+      await post("/api/candidate/stage/score-answer", {});
       setAnswer("");
       setAiUsageNote("");
-      setData((current) => current && {
-        ...current,
-        messages: mergeById(current.messages, [result.candidateMessage, result.aiMessage].filter(Boolean)),
-        turnScores: mergeById(current.turnScores, [result.turnScore].filter(Boolean)),
-        progress: result.progress ?? current.progress
-      });
-      await load();
-      setStatusMessage(result.progress?.stageComplete ? "本关所需轮次已完成，可以进入下一步。" : "本轮评分和追问已生成。");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "提交正式回应失败");
+      setError(err instanceof Error ? err.message : "提交回答失败");
     } finally {
-      setLoading(false);
+      setLoadingAction(null);
     }
   }
 
   async function sendAssistantMessage() {
-    if (!assistantInput.trim() || !data) return;
-    const submitted = assistantInput;
+    if (!assistantInput.trim()) return;
+    const content = assistantInput.trim();
+    setAssistantInput("");
     setAssistantLoading(true);
     setError("");
-    setStatusMessage(`正在调用 ${modelProvider} 生成模型交互回复。`);
-    setAssistantInput("");
-    const optimistic: WorkspaceMessage = {
-      id: `optimistic-${Date.now()}`,
-      candidate_id: data.candidate.id,
-      stage_id: currentStage?.id,
-      role: "candidate",
-      model_provider: modelProvider,
-      content: submitted,
-      created_at: new Date().toISOString()
-    };
-    setData({ ...data, workspaceMessages: mergeById(data.workspaceMessages, [optimistic]) });
     try {
-      const result = await authedPost(`/api/candidates/${data.candidate.id}/workspace-chat`, { content: submitted, model_provider: modelProvider });
-      setData((current) => current && {
-        ...current,
-        workspaceMessages: mergeById(
-          current.workspaceMessages.filter((message) => !message.id.startsWith("optimistic-")),
-          [result.userMessage, result.modelMessage].filter(Boolean)
-        )
-      });
-      await load();
-      setStatusMessage("模型交互回复已生成并留痕。");
+      await post("/api/candidate/assistant/chat", { content });
     } catch (err) {
-      setError(err instanceof Error ? err.message : "模型助手调用失败");
+      setError(err instanceof Error ? err.message : "辅助 AI 调用失败");
     } finally {
       setAssistantLoading(false);
     }
   }
 
-  if (!data || !currentStage || !progress) return <div className="container">加载考核现场...</div>;
+  function startDrag(event: PointerEvent<HTMLDivElement>) {
+    dragRef.current = { startX: event.clientX, startY: event.clientY, originX: assistantPos.x, originY: assistantPos.y };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
 
-  const latestScore = stageScores[stageScores.length - 1];
-  const activeStep = currentStageName === PREP_STAGE ? 2 : currentStageName === BASIC_STAGE ? 3 : 4;
-  const elapsedSeconds = currentStage.started_at ? Math.max(0, Math.floor((nowMs - new Date(currentStage.started_at).getTime()) / 1000)) : 0;
-  const targetSeconds = currentStage.target_duration_seconds ?? 0;
-  const remainingSeconds = targetSeconds ? targetSeconds - elapsedSeconds : 0;
-  const latestAiMessage = [...stageMessages].reverse().find((message) => message.role === "ai");
-  const canStartQuestion = currentStageName === PREP_STAGE || (stageMessages.length === 0 && currentStageName !== ABILITY_STAGE);
-  const answerDisabled = loading || !latestAiMessage || progress.stageComplete || data.candidate.status === "evaluated";
+  function moveDrag(event: PointerEvent<HTMLDivElement>) {
+    if (!dragRef.current) return;
+    const next = {
+      x: Math.max(8, dragRef.current.originX + event.clientX - dragRef.current.startX),
+      y: Math.max(8, dragRef.current.originY + event.clientY - dragRef.current.startY)
+    };
+    setAssistantPos(next);
+    localStorage.setItem("assistant_dock_pos", JSON.stringify(next));
+  }
+
+  function endDrag() {
+    dragRef.current = null;
+  }
+
+  if (!data) return <div className="container">正在恢复考核状态...</div>;
 
   return (
-    <div className="container">
+    <div className="container candidate-arena-shell">
       <FlowGuide active={activeStep} />
-      {error ? <p className="badge cut">{error}</p> : null}
-      {statusMessage ? <p className="badge">{statusMessage}</p> : null}
-
-      <div className="arena-grid candidate-stage-grid">
-        <aside className="panel stage-side">
+      <header className="stage-hero">
+        <div>
           <p className="badge">{data.candidate.target_role ?? "AI 产品经理"}</p>
-          <h2>{currentStageName}</h2>
-          <p className="muted">{stageCopy[currentStageName]?.goal}</p>
+          <h1 className="title">{data.stage_name}</h1>
+          <p className="subtitle">{stageGoal[data.stage_key]}</p>
+        </div>
+        <TimerBadge timing={data.timing} />
+      </header>
 
-          {targetSeconds > 0 ? (
-            <div className={`timer ${remainingSeconds < 0 ? "overtime" : ""}`}>
-              <span>目标时长：{formatDuration(targetSeconds)}</span>
-              <strong>{remainingSeconds < 0 ? `已超时 ${formatDuration(Math.abs(remainingSeconds))}` : `剩余 ${formatDuration(remainingSeconds)}`}</strong>
-              <span>已用：{formatDuration(elapsedSeconds)}</span>
-            </div>
-          ) : null}
+      {error ? <p className="badge cut">{error}</p> : null}
+      {data.activeProgress?.last_error ? <p className="badge cut">{data.activeProgress.last_error}</p> : null}
 
-          <p className="badge">本关进度：{progress.answeredTurns}/{progress.requiredTurns} 轮</p>
-          {latestScore ? <p className="badge">最新得分：{latestScore.average_score} / {latestScore.recommendation}</p> : null}
-
-          <div className="actions vertical-actions">
-            {currentStageName === PREP_STAGE || stageMessages.length === 0 ? (
-              <button className="btn secondary" onClick={startOrAdvanceStage} disabled={loading}>
-                {loading ? "AI 正在生成题目..." : "进入第一题"}
-              </button>
-            ) : currentStageName === BASIC_STAGE ? (
-              <button className="btn secondary" onClick={startOrAdvanceStage} disabled={loading || !progress.canAdvanceStage}>
-                {progress.canAdvanceStage ? "进入能力关卡" : `完成 ${progress.requiredTurns} 轮后进入能力关卡`}
-              </button>
-            ) : (
-              <button className="btn" onClick={() => router.push("/candidate/final-submit")} disabled={loading || !progress.canSubmitFinal}>
-                {progress.canSubmitFinal ? "提交最终方案" : `完成 ${progress.requiredTurns} 轮后可提交最终方案`}
-              </button>
-            )}
+      <main className="stage-workspace">
+        <section className="question-panel">
+          <div className="stage-status-row">
+            <span className="badge">第 {data.activeProgress?.current_question_index ?? 0} 题</span>
+            <span className="badge">{stateLabel(data.activeProgress?.current_state)}</span>
+            {data.latestScore ? <span className="badge">上一题得分 {data.latestScore.average_score}</span> : null}
           </div>
-        </aside>
-
-        <section className="panel answer-panel">
-          <h2>AI 考核官对话区</h2>
-          <div className="question-card">
+          <article className="question-card">
             <strong>当前题目</strong>
-            <p>{latestAiMessage?.content ?? "请点击左侧按钮生成正式题目。"}</p>
-          </div>
-
-          {stageMessages.length > 1 ? (
-            <details className="history-box">
-              <summary>查看本关历史对话</summary>
-              <div className="chat">
-                {stageMessages.map((message) => (
-                  <div key={message.id} className={`message ${message.role}`}>
-                    <strong>{message.role === "ai" ? "AI 考核官" : "候选人"}</strong><br />
-                    {message.content}
-                  </div>
-                ))}
-              </div>
-            </details>
-          ) : null}
+            <p>{data.current_question?.question_text ?? "点击下方按钮进入第一题，系统会实时调用模型生成题目。"}</p>
+          </article>
 
           <div className="field">
             <label>正式回答</label>
             <textarea
-              className="textarea answer-textarea"
+              className="textarea answer-textarea stage-answer-textarea"
               value={answer}
               onChange={(event) => setAnswer(event.target.value)}
-              disabled={answerDisabled}
-              placeholder="请在这里输入你的正式作答。只有这里的内容会进入正式评分。"
+              disabled={!canEdit}
+              placeholder="请在这里输入正式作答。只有这里的内容会进入评分。"
             />
           </div>
           <div className="field">
@@ -282,103 +285,98 @@ export default function CandidateArenaPage() {
               className="textarea usage-textarea"
               value={aiUsageNote}
               onChange={(event) => setAiUsageNote(event.target.value)}
-              disabled={answerDisabled}
-              placeholder="说明是否使用 AI、使用了什么、采纳/否定/修改了哪些内容。"
+              disabled={!canEdit}
+              placeholder="说明是否使用 AI、使用了什么 AI、采纳/否定/修改了哪些内容。"
             />
           </div>
-          <button className="btn" onClick={submitAnswer} disabled={answerDisabled || !answer.trim()}>
-            {loading ? "AI 正在评分并追问..." : progress.stageComplete ? "本关已完成" : "提交正式回答"}
+
+          <button
+            className="btn stage-primary-action"
+            disabled={Boolean(loadingAction) || data.button.disabled || (data.button.action === "submit_answer" && !answer.trim())}
+            onClick={() => data.button.action === "submit_answer" ? submitAnswer("manual") : runAction(data.button.action)}
+          >
+            {loadingAction === "auto_submit" ? "已超时，系统正在自动提交" : loadingAction ? busyLabel(loadingAction) : data.button.label}
           </button>
         </section>
 
-        <aside className="panel score-side">
-          <h2>维度评分表</h2>
-          <div className="timeline">
-            {stageScores.length ? stageScores.map((score, index) => (
-              <div className="event" key={score.id}>
-                <div className="event-type">第 {index + 1} 轮：{score.average_score} 分 / {score.recommendation}</div>
-                <div>{score.reason_summary}</div>
-                <table className="mini-table">
-                  <tbody>
-                    {Object.entries(score.scores).map(([key, value]) => (
-                      <tr key={key}><td>{key}</td><td>{value}</td></tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )) : <p className="muted">提交正式回答后，系统会调用模型生成维度评分。</p>}
-          </div>
+        <aside className="stage-evidence-panel">
+          <h2>过程记录</h2>
+          {stageQuestions.length ? stageQuestions.map((question, index) => {
+            const score = data.scores.find((item) => item.question_id === question.question_id);
+            const answerRecord = data.answers.find((item) => item.question_id === question.question_id);
+            return (
+              <article className={`session-card ${Number(score?.average_score ?? 100) < 60 ? "risk" : ""}`} key={question.question_id}>
+                <strong>题目 {index + 1}</strong>
+                <p>{question.question_text}</p>
+                {answerRecord ? <p className="muted">已提交：{answerRecord.answer_text?.slice(0, 90)}</p> : <p className="muted">等待作答</p>}
+                {score ? <span className="badge">{score.average_score} / {score.score_status}</span> : null}
+              </article>
+            );
+          }) : <p className="muted">尚未生成题目。</p>}
         </aside>
-      </div>
+      </main>
 
       <button className="assistant-launcher" onClick={() => setAssistantOpen(true)}>AI 小助手</button>
       {assistantOpen ? (
-        <section className={`assistant-dock ${assistantLarge ? "large" : ""}`}>
-          <div className="assistant-head">
-            <strong>模型交互小助手</strong>
-            <div className="actions">
-              <button className="btn secondary" onClick={() => setAssistantLarge((value) => !value)}>{assistantLarge ? "缩小" : "放大"}</button>
-              <button className="btn secondary" onClick={() => setAssistantOpen(false)}>关闭</button>
-            </div>
-          </div>
-          <div className="field">
-            <label>模型</label>
-            <select className="select" value={modelProvider} onChange={(event) => setModelProvider(event.target.value as ModelProvider)}>
-              <option value="deepseek">DeepSeek</option>
-              <option value="openai">OpenAI</option>
-            </select>
+        <section className="assistant-dock floating-assistant" style={{ right: assistantPos.x, bottom: assistantPos.y }}>
+          <div className="assistant-head" onPointerDown={startDrag} onPointerMove={moveDrag} onPointerUp={endDrag}>
+            <strong>辅助 AI 对话</strong>
+            <button className="icon-button" onClick={() => setAssistantOpen(false)} type="button">×</button>
           </div>
           <div className="chat workspace-chat assistant-chat">
-            {assistantMessages.map((message) => (
-              <div key={message.id} className={`message ${message.role === "model" ? "ai" : "candidate"}`}>
+            {data.chatMessages.map((message) => (
+              <div key={message.message_id} className={`message ${message.role === "model" ? "ai" : "candidate"}`}>
                 <strong>{message.role === "model" ? "模型助手" : "候选人"}</strong><br />
                 {message.content}
               </div>
             ))}
-            {assistantLoading ? <div className="message ai"><strong>模型助手</strong><br />正在等待 {modelProvider} 返回。</div> : null}
+            {assistantLoading ? <div className="message ai"><strong>模型助手</strong><br />正在生成回复。</div> : null}
           </div>
-          <textarea
-            className="textarea"
-            value={assistantInput}
-            onChange={(event) => setAssistantInput(event.target.value)}
-            placeholder="输入你的思考问题。模型助手会留痕，但不会自动写入正式回答。"
-          />
-          <button className="btn secondary" onClick={sendAssistantMessage} disabled={assistantLoading || !assistantInput.trim()}>
-            {assistantLoading ? "模型思考中..." : `发送给 ${modelProvider}`}
-          </button>
+          <textarea className="textarea" value={assistantInput} onChange={(event) => setAssistantInput(event.target.value)} placeholder="辅助思考，不会自动写入正式答案。" />
+          <button className="btn secondary" onClick={sendAssistantMessage} disabled={assistantLoading || !assistantInput.trim()}>发送</button>
         </section>
       ) : null}
     </div>
   );
 }
 
+function TimerBadge({ timing }: { timing: StageCurrent["timing"] }) {
+  return (
+    <div className={`timer stage-timer ${timing.is_overtime ? "overtime" : ""}`}>
+      <span>目标：{formatDuration(timing.target_duration_seconds)}</span>
+      <strong>{timing.is_overtime ? `已超时 ${formatDuration(Math.abs(timing.remaining_seconds))}` : `剩余 ${formatDuration(Math.max(timing.remaining_seconds, 0))}`}</strong>
+      <span>已用：{formatDuration(timing.elapsed_seconds)}</span>
+    </div>
+  );
+}
+
 function formatDuration(seconds: number) {
-  const mins = Math.floor(seconds / 60);
-  const secs = seconds % 60;
+  const mins = Math.floor(Math.max(0, seconds) / 60);
+  const secs = Math.max(0, seconds) % 60;
   return `${mins}:${String(secs).padStart(2, "0")}`;
 }
 
-function mergeCandidateData(current: CandidateData | null, next: CandidateData): CandidateData {
-  if (!current || current.candidate.id !== next.candidate.id) return next;
-  return {
-    ...next,
-    stages: mergeById(current.stages, next.stages),
-    messages: mergeById(current.messages, next.messages),
-    workspaceMessages: mergeById(current.workspaceMessages, next.workspaceMessages),
-    eventLogs: mergeById(current.eventLogs, next.eventLogs),
-    turnScores: mergeById(current.turnScores, next.turnScores),
-    agents: next.agents.length ? next.agents : current.agents,
-    progress: next.progress ?? current.progress
+function stateLabel(state?: string) {
+  const labels: Record<string, string> = {
+    INIT: "等待开始",
+    GENERATING_FIRST_QUESTION: "生成首题中",
+    GENERATING_NEXT_QUESTION: "生成下一题中",
+    ANSWERING: "作答中",
+    ANSWERING_OVERTIME: "已超时",
+    SUBMITTING_ANSWER: "提交中",
+    SCORING: "评分中",
+    WAITING_NEXT_ACTION: "等待下一题",
+    BASIC_STAGE_COMPLETED: "基础关卡完成",
+    ABILITY_STAGE_COMPLETED: "能力关卡完成",
+    GENERATION_FAILED: "生成失败",
+    SCORE_FAILED: "评分失败"
   };
+  return state ? labels[state] ?? state : "未开始";
 }
 
-function mergeById<T extends { id: string; created_at?: string }>(previous: T[], incoming: T[]) {
-  const merged = new Map<string, T>();
-  for (const item of previous) merged.set(item.id, item);
-  for (const item of incoming) merged.set(item.id, item);
-  return Array.from(merged.values()).sort((a, b) => {
-    const left = a.created_at ? new Date(a.created_at).getTime() : 0;
-    const right = b.created_at ? new Date(b.created_at).getTime() : 0;
-    return left - right;
-  });
+function busyLabel(action: string) {
+  if (action === "start_first_question" || action === "next_question") return "AI 正在生成题目，请稍候";
+  if (action === "submit_answer") return "正在提交回答";
+  if (action === "score_answer") return "AI 正在评分，请稍候";
+  return "处理中";
 }

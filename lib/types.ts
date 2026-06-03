@@ -1,5 +1,14 @@
 ﻿export type Recommendation = "通过" | "继续观察" | "Cut";
-export type CandidateStatus = "created" | "profiled" | "invited" | "in_progress" | "submitted" | "evaluated" | "reviewed";
+export type CandidateStatus =
+  | "created"
+  | "profiled"
+  | "invited"
+  | "in_progress"
+  | "assessment_started"
+  | "submitted"
+  | "evaluated"
+  | "reviewed"
+  | "assessment_completed";
 export type StageName = "面试关卡准备" | "基础关卡" | "能力关卡";
 export type StageStatus = "not_started" | "in_progress" | "completed";
 export type ModelProvider = "deepseek" | "openai";
@@ -214,8 +223,22 @@ export type RoleParticipation = {
 export type TurnScore = {
   id: string;
   candidate_id: string;
-  message_id: string;
-  stage_id: string;
+  message_id?: string;
+  stage_id?: string;
+  stage_key?: "basic" | "ability" | "final";
+  question_id?: string;
+  session_id?: string;
+  dimension_key?: string;
+  content_score?: number;
+  final_score?: number;
+  score_status?: string;
+  timeout_level?: string;
+  evidence_summary?: string[];
+  risk_flags?: string[];
+  need_follow_up?: boolean;
+  next_action?: string;
+  model_name?: string;
+  prompt_version?: string;
   elapsed_seconds?: number;
   time_coefficient?: number;
   scores: Record<string, number>;
