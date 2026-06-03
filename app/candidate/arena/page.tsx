@@ -197,6 +197,11 @@ export default function CandidateArenaPage() {
     void submitAnswer("auto_timeout");
   }, [canEdit, effectiveTiming?.should_auto_submit]);
 
+  useEffect(() => {
+    if (!manualReviewRequired) return;
+    router.replace("/candidate/final-submit");
+  }, [manualReviewRequired, router]);
+
   async function post(path: string, body: Record<string, unknown>, reload = true) {
     const auth = session();
     if (!auth) throw new Error("缺少候选人登录态");

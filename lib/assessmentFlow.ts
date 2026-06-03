@@ -1,10 +1,12 @@
-import { generateFollowUp, generateStageOpening, generateWorkspaceReply, scoreTurn } from "./ai";
+import { generateFinalEvaluation, generateFollowUp, generateStageOpening, generateWorkspaceReply, scoreTurn } from "./ai";
 import { AssessmentStageKey, AssessmentState } from "./assessmentTypes";
 import { calculateTimeCoefficient, basicStageDimensions, stageDurations, timeoutLevel } from "./stages";
 import { ABILITY_STAGE, BASIC_STAGE, stageNameFromKey } from "./stageNames";
 import { AbilityDimension, Candidate, ModelProvider, Stage, TurnScore } from "./types";
 import { listAgents } from "./repositories/agents";
 import { updateCandidate } from "./repositories/candidates";
+import { listEvents } from "./repositories/events";
+import { listMessages, listWorkspaceMessages } from "./repositories/messages";
 import {
   addAssessmentEvent,
   addAssessmentTurnScore,
@@ -445,7 +447,10 @@ export async function assistantChat(candidate: Candidate, content: string, provi
 export async function finalSubmit(candidate: Candidate, input: { final_solution: string; ai_usage_note: string; provider: ModelProvider }) {
   const current = await getAssessmentCurrent(candidate);
   const ability = current.progressRows.find((row) => row.stage_key === "ability");
-  if (!ability || ability.current_state !== "ABILITY_STAGE_COMPLETED") throw new Error("ability_stage_not_completed");
+  const needsManualReview = current.progressRows.some((row) => row.current_state === "MANUAL_REVIEW_REQUIRED");
+  if ((!ability || ability.current_state !== "ABILITY_STAGE_COMPLETED") && !needsManualReview && current.stage_key !== "final") {
+    throw new Error("final_review_not_available");
+  }
   const finalProgress = await ensureStageProgress({ candidate_id: candidate.id, stage_key: "final", current_state: "INIT", target_duration_seconds: STAGE_TARGET_SECONDS.final });
   await updateStageProgress(finalProgress.id, { current_state: "SCORING" });
   await updateCandidate(candidate.id, {
@@ -453,39 +458,66 @@ export async function finalSubmit(candidate: Candidate, input: { final_solution:
     ai_usage_note: input.ai_usage_note,
     status: "submitted"
   });
-  const turnScores = await listAssessmentScores(candidate.id);
-  const evaluation = decideFinalSubmitScore(input.final_solution);
+  const [messages, workspaceMessages, eventLogs, turnScores] = await Promise.all([
+    listMessages(candidate.id),
+    listWorkspaceMessages(candidate.id),
+    listEvents(candidate.id),
+    listAssessmentScores(candidate.id)
+  ]);
+  const [profileEvaluation, finalDecision] = await Promise.all([
+    generateFinalEvaluation({
+      provider: "deepseek",
+      candidateInfo: candidate,
+      interviewerEvaluations: candidate.interviewer_evaluations ?? [],
+      messages,
+      eventLogs,
+      workspaceMessages,
+      turnScores,
+      finalSolution: `${input.final_solution}\n\n候选人最终反馈：${input.ai_usage_note || "无"}`,
+      aiUsageNote: ""
+    }),
+    Promise.resolve(decideFinalSubmitScore(input.final_solution))
+  ]);
+  const reportSummary = `${finalDecision.reason_summary}\n\n最终人物画像摘要：${profileEvaluation.reason_summary}`;
   const report = await addFinalReviewReport({
     candidate_id: candidate.id,
-    final_profile_json: evaluation,
+    final_profile_json: {
+      ...profileEvaluation,
+      candidate_feedback: input.ai_usage_note,
+      test_decision: finalDecision
+    },
     basic_stage_summary: summarizeStageScores(turnScores, "basic"),
     ability_stage_summary: summarizeStageScores(turnScores, "ability"),
-    final_evaluation_summary: evaluation.reason_summary,
+    final_evaluation_summary: reportSummary,
     supervisor_scores_json: current.stageEvaluations,
-    overall_score: evaluation.average_score,
-    overall_comment: evaluation.reason_summary,
-    pass_decision: evaluation.recommendation,
-    probation_assessment_suggestions: evaluation.reviewer_notes,
-    verification_focus_points: evaluation.evidence_summary ?? [],
-    risk_points: evaluation.risk_tags ?? [],
-    report_text: evaluation.reason_summary
+    overall_score: finalDecision.average_score,
+    overall_comment: reportSummary,
+    pass_decision: finalDecision.recommendation,
+    probation_assessment_suggestions: profileEvaluation.reviewer_notes,
+    verification_focus_points: profileEvaluation.evidence_summary ?? [],
+    risk_points: [...(profileEvaluation.risk_tags ?? []), ...(finalDecision.risk_tags ?? [])],
+    report_text: reportSummary
   });
   await addCandidateProfile({
     candidate_id: candidate.id,
     original_profile_json: candidate.persona_profile ?? {},
-    updated_profile_json: evaluation,
-    profile_comparison_json: { evidence_summary: evaluation.evidence_summary, risk_tags: evaluation.risk_tags },
-    profile_summary: evaluation.reason_summary
+    updated_profile_json: {
+      ...profileEvaluation,
+      candidate_feedback: input.ai_usage_note,
+      test_decision: finalDecision
+    },
+    profile_comparison_json: { evidence_summary: profileEvaluation.evidence_summary, risk_tags: profileEvaluation.risk_tags, candidate_feedback: input.ai_usage_note },
+    profile_summary: profileEvaluation.reason_summary
   });
   await updateStageProgress(finalProgress.id, { current_state: "FINAL_EVALUATION_COMPLETED", score_status: "score_success" });
-  await updateCandidate(candidate.id, { status: "assessment_completed", final_recommendation: evaluation.recommendation });
+  await updateCandidate(candidate.id, { status: "assessment_completed", final_recommendation: finalDecision.recommendation, final_solution: input.final_solution, ai_usage_note: input.ai_usage_note });
   await addAssessmentEvent({
     candidate_id: candidate.id,
     stage_key: "final",
     event_type: "stage_completed",
-    event_payload: { report_id: (report as any).report_id, recommendation: evaluation.recommendation },
-    ai_summary: evaluation.reason_summary,
-    risk_tags: evaluation.risk_tags
+    event_payload: { report_id: (report as any).report_id, recommendation: finalDecision.recommendation, candidate_feedback_length: input.ai_usage_note.length },
+    ai_summary: reportSummary,
+    risk_tags: [...(profileEvaluation.risk_tags ?? []), ...(finalDecision.risk_tags ?? [])]
   });
   return report;
 }

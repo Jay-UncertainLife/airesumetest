@@ -56,7 +56,12 @@ export default async function AdminCandidateDetailPage({ params }: { params: { i
               <div>
                 <h3>最终新画像</h3>
                 {overview.updatedProfile ? (
-                  <p>{String((overview.updatedProfile as any).profile_summary ?? "")}</p>
+                  <>
+                    <p>{String((overview.updatedProfile as any).profile_summary ?? "")}</p>
+                    {(overview.updatedProfile as any).updated_profile_json ? (
+                      <p className="message ai">{String((overview.updatedProfile as any).updated_profile_json?.reason_summary ?? "")}</p>
+                    ) : null}
+                  </>
                 ) : <p className="muted">尚未生成最终新画像。</p>}
               </div>
             </div>
@@ -68,10 +73,10 @@ export default async function AdminCandidateDetailPage({ params }: { params: { i
 
         <article className="panel">
           <h2>最终评价</h2>
-          <p><strong>最终方案</strong></p>
+          <p><strong>作答记录确认</strong></p>
           <p className="message candidate">{candidate.final_solution ?? "候选人尚未提交最终方案。"}</p>
-          <p><strong>AI 使用说明</strong></p>
-          <p className="message ai">{candidate.ai_usage_note ?? "暂无说明。"}</p>
+          <p><strong>候选人最终反馈</strong></p>
+          <p className="message candidate">{candidate.ai_usage_note ?? "候选人尚未填写最终反馈。"}</p>
           <StagePanel title="最终评价过程" detail={finalStage} embedded />
         </article>
 
@@ -110,8 +115,6 @@ function StagePanel({ title, detail, embedded = false }: { title: string; detail
           <p>{item.question_text}</p>
           <p><strong>候选人答案</strong></p>
           <p className="message candidate">{item.answer?.answer_text ?? "尚未提交。"}</p>
-          <p><strong>AI 使用说明</strong></p>
-          <p className="message ai">{item.answer?.ai_usage_note ?? "暂无说明。"}</p>
           {item.score ? (
             <div className="score-block">
               <p>{item.score.reason_summary}</p>
