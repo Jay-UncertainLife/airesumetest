@@ -4,7 +4,7 @@ import { assertCandidateToken, jsonError, readJson, tokenFromRequest } from "@/l
 import { listAgents } from "@/lib/repositories/agents";
 import { addEvent } from "@/lib/repositories/events";
 import { listJobRoles } from "@/lib/repositories/jobRoles";
-import { addMessage } from "@/lib/repositories/messages";
+import { addMessage, listMessages } from "@/lib/repositories/messages";
 import { getActiveStage, getNextStage, updateStage } from "@/lib/repositories/stages";
 import { updateCandidate } from "@/lib/repositories/candidates";
 import { stageDurations } from "@/lib/stages";
@@ -34,6 +34,38 @@ export async function POST(request: Request, { params }: { params: { id: string 
         fallbackDimensions: jobRole.ability_dimensions
       });
       await updateCandidate(candidate.id, { ability_plan: abilityPlan });
+    }
+
+    const currentMessages = await listMessages(params.id);
+    const currentHasQuestion = currentMessages.some((message) => message.stage_id === current.id && message.role === "ai");
+    if (current.name !== "面试关卡准备" && !currentHasQuestion) {
+      const opening = await generateStageOpening({
+        provider: candidate.selected_model ?? "deepseek",
+        candidate: { ...candidate, ability_plan: abilityPlan },
+        stage: current,
+        targetRole: candidate.target_role ?? jobRole.name,
+        targetDifficulty: candidate.target_difficulty ?? jobRole.difficulty,
+        abilityDimensions: jobRole.ability_dimensions
+      });
+      const agent = agents.find((item) => item.status === "enabled" && item.agent_role === "lead_examiner") ?? agents[0];
+      const message = await addMessage({
+        candidate_id: params.id,
+        stage_id: current.id,
+        role: "ai",
+        ai_role: "examiner",
+        model_provider: candidate.selected_model ?? "deepseek",
+        agent_id: agent?.id,
+        content: opening.question
+      });
+      await addEvent({
+        candidate_id: params.id,
+        stage_id: current.id,
+        event_type: current.name === "能力关卡" ? "pressure_added" : "ai_question",
+        raw_content: message.content,
+        ai_summary: JSON.stringify(opening),
+        risk_tags: current.name === "能力关卡" ? ["时间限制", "工程资源限制", "证据留痕限制"] : []
+      });
+      return NextResponse.json({ stage: current, message, repaired: true });
     }
 
     await updateStage(current.id, { status: "completed", completed_at: new Date().toISOString() });

@@ -128,7 +128,8 @@ export default function CandidateArenaPage() {
   const stageMessages = data.messages.filter((message) => message.stage_id === currentStage.id);
   const workspaceMessages = data.workspaceMessages.filter((message) => !message.stage_id || message.stage_id === currentStage.id);
   const hasNextStage = data.stages.some((stage) => stage.status === "not_started");
-  const activeStep = currentStage.name === "基础关卡" ? 3 : 4;
+  const isPrepStage = currentStage.name === "面试关卡准备";
+  const activeStep = isPrepStage ? 2 : currentStage.name === "基础关卡" ? 3 : 4;
   const latestScore = data.turnScores[data.turnScores.length - 1];
   const elapsedSeconds = currentStage.started_at ? Math.max(0, Math.floor((nowMs - new Date(currentStage.started_at).getTime()) / 1000)) : 0;
   const targetSeconds = currentStage.target_duration_seconds ?? 0;
@@ -150,7 +151,7 @@ export default function CandidateArenaPage() {
         <aside className="panel">
           <p className="badge">{data.candidate.target_role}</p>
           <h2>{currentStage.name}</h2>
-          <p className="muted">{stageCopy[currentStage.name].goal}</p>
+          <p className="muted">{stageCopy[currentStage.name]?.goal ?? "AI 考核官将根据候选人画像、岗位难度和能力维度生成本关问题。"}</p>
           {targetSeconds > 0 ? (
             <div className={`timer ${remainingSeconds < 0 ? "overtime" : ""}`}>
               <span>目标时长：{formatDuration(targetSeconds)}</span>
@@ -163,13 +164,21 @@ export default function CandidateArenaPage() {
           <h2>关键事件</h2>
           <div className="timeline">{data.eventLogs.map((event) => <div className="event" key={event.id}><div className="event-type">{event.event_type}</div><div>{event.ai_summary || event.raw_content.slice(0, 100)}</div></div>)}</div>
           <div className="actions">
-            {hasNextStage ? <button className="btn secondary" onClick={advanceStage} disabled={loading}>进入下一关</button> : <button className="btn" onClick={() => router.push("/candidate/final-submit")}>提交最终方案</button>}
+            {hasNextStage ? <button className="btn secondary" onClick={advanceStage} disabled={loading}>{isPrepStage ? "生成基础关卡首题" : "进入下一关"}</button> : <button className="btn" onClick={() => router.push("/candidate/final-submit")}>提交最终方案</button>}
           </div>
         </aside>
 
         <section className="panel">
           <h2>AI 考核官对话区</h2>
-          <div className="chat">{stageMessages.map((message) => <div key={message.id} className={`message ${message.role}`}><strong>{message.role === "ai" ? "AI 考核官" : "候选人"}</strong><br />{message.content}</div>)}</div>
+          <div className="chat">
+            {stageMessages.length === 0 ? (
+              <div className="message ai">
+                <strong>AI 考核官</strong><br />
+                {isPrepStage ? "当前仍在面试关卡准备。请点击左侧“生成基础关卡首题”，系统会调用模型生成正式题目。" : "本关尚未生成首题。请返回准备页重新进入，或点击左侧按钮触发 AI 出题。"}
+              </div>
+            ) : null}
+            {stageMessages.map((message) => <div key={message.id} className={`message ${message.role}`}><strong>{message.role === "ai" ? "AI 考核官" : "候选人"}</strong><br />{message.content}</div>)}
+          </div>
           <div className="field" style={{ marginTop: 16 }}>
             <label>正式回应</label>
             <textarea className="textarea" value={answer} onChange={(event) => setAnswer(event.target.value)} />
