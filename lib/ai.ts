@@ -81,7 +81,9 @@ export async function generateStageOpening(input: {
     personaProfile: input.candidate.persona_profile ?? {},
     targetRole: input.targetRole,
     targetDifficulty: input.targetDifficulty,
-    abilityDimensions: input.abilityDimensions
+    abilityDimensions: input.abilityDimensions,
+    agentParticipation: input.candidate.ability_plan?.agent_participation ?? [],
+    questionStrategy: input.candidate.ability_plan?.question_strategy ?? []
   });
   const result = await callModel({
     provider: input.provider,
