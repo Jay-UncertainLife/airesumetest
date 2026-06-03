@@ -91,6 +91,10 @@ export default function CandidateArenaPage() {
       setError(next.message ?? next.error ?? "读取考核状态失败");
       return;
     }
+    if (!isStageCurrent(next)) {
+      setError("后端返回的考核状态结构不完整，请刷新页面重试。");
+      return;
+    }
     setData(next);
     setModelProvider(next.candidate?.selected_model ?? "deepseek");
     setAnswer((current) => {
@@ -156,10 +160,7 @@ export default function CandidateArenaPage() {
     });
     const json = await res.json();
     if (!res.ok) throw new Error(json.message ?? json.error ?? "请求失败");
-    if (reload) {
-      setData(json);
-      await load();
-    }
+    if (reload) await load();
     return json;
   }
 
@@ -213,7 +214,8 @@ export default function CandidateArenaPage() {
     setAssistantLoading(true);
     setError("");
     try {
-      await post("/api/candidate/assistant/chat", { content });
+      await post("/api/candidate/assistant/chat", { content }, false);
+      await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : "辅助 AI 调用失败");
     } finally {
@@ -379,4 +381,19 @@ function busyLabel(action: string) {
   if (action === "submit_answer") return "正在提交回答";
   if (action === "score_answer") return "AI 正在评分，请稍候";
   return "处理中";
+}
+
+function isStageCurrent(value: unknown): value is StageCurrent {
+  if (!value || typeof value !== "object") return false;
+  const data = value as Partial<StageCurrent>;
+  return Boolean(
+    data.candidate &&
+    typeof data.stage_key === "string" &&
+    data.timing &&
+    data.button &&
+    Array.isArray(data.questions) &&
+    Array.isArray(data.answers) &&
+    Array.isArray(data.scores) &&
+    Array.isArray(data.chatMessages)
+  );
 }

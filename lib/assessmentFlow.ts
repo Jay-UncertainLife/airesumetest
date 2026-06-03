@@ -87,7 +87,20 @@ export async function getAssessmentCurrent(candidate: Candidate) {
           ? final
           : final ?? ability ?? basic;
 
-  const activeQuestion = activeProgress?.active_question_id ? await getQuestion(activeProgress.active_question_id) : null;
+  let activeQuestion = activeProgress?.active_question_id ? await getQuestion(activeProgress.active_question_id) : null;
+  if (!activeQuestion && activeProgress?.current_question_id && ["ANSWERING", "ANSWERING_OVERTIME", "SUBMITTING_ANSWER", "SCORING"].includes(activeProgress.current_state)) {
+    activeQuestion = await getQuestion(activeProgress.current_question_id);
+  }
+  if (!activeQuestion && activeProgress && ["ANSWERING", "ANSWERING_OVERTIME"].includes(activeProgress.current_state)) {
+    const stageQuestions = await listQuestions(candidate.id, activeProgress.stage_key);
+    activeQuestion = [...stageQuestions].reverse().find((question) => question.status === "active") ?? null;
+    if (activeQuestion && !activeProgress.active_question_id) {
+      await updateStageProgress(activeProgress.id, {
+        active_question_id: activeQuestion.question_id,
+        current_question_id: activeQuestion.question_id
+      });
+    }
+  }
   const session = activeQuestion ? await getAnswerSession(candidate.id, activeQuestion.question_id) : null;
   const draft = activeQuestion ? await getDraft(candidate.id, activeQuestion.question_id) : null;
   const answer = activeQuestion ? await getAnswerForQuestion(candidate.id, activeQuestion.question_id) : null;
