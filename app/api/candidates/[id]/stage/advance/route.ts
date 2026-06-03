@@ -1,9 +1,11 @@
 import { NextResponse } from "next/server";
 import { generateAbilityPlan, generateStageOpening } from "@/lib/ai";
+import { buildArenaProgress } from "@/lib/arenaProgress";
 import { assertCandidateToken, jsonError, readJson, tokenFromRequest } from "@/lib/apiUtils";
 import { listAgents } from "@/lib/repositories/agents";
 import { updateCandidate } from "@/lib/repositories/candidates";
 import { addEvent } from "@/lib/repositories/events";
+import { listTurnScores } from "@/lib/repositories/evaluations";
 import { listJobRoles } from "@/lib/repositories/jobRoles";
 import { addMessage, listMessages } from "@/lib/repositories/messages";
 import { completeOtherActiveStages, createStage, getActiveStage, getNextStage, listStages, resetStages, updateStage } from "@/lib/repositories/stages";
@@ -21,16 +23,12 @@ export async function POST(request: Request, { params }: { params: { id: string 
 
     const [agents, jobRoles] = await Promise.all([listAgents(), listJobRoles()]);
     const jobRole = jobRoles.find((job) => job.name === candidate.target_role) ?? jobRoles[0];
-    if (!jobRole) {
-      return NextResponse.json({ error: "job_role_not_configured", message: "岗位配置不存在。" }, { status: 400 });
-    }
+    if (!jobRole) return NextResponse.json({ error: "job_role_not_configured", message: "岗位配置不存在。" }, { status: 400 });
 
     let current = await getActiveStage(params.id);
     if (!current) {
       const first = await getNextStage(params.id);
-      if (!first) {
-        return NextResponse.json({ error: "stage_transition_unavailable", message: "没有可启动的关卡。" }, { status: 400 });
-      }
+      if (!first) return NextResponse.json({ error: "stage_transition_unavailable", message: "没有可启动的关卡。" }, { status: 400 });
       current = first;
     }
 
@@ -65,7 +63,8 @@ export async function POST(request: Request, { params }: { params: { id: string 
     const existingQuestion = await findExistingQuestion(params.id, targetStage.id);
     if (existingQuestion) {
       const startedStage = await activateTargetStage(params.id, current, targetStage);
-      return NextResponse.json({ stage: startedStage, message: existingQuestion, existing: true });
+      const progress = await getProgress(params.id);
+      return NextResponse.json({ stage: startedStage, message: existingQuestion, existing: true, progress });
     }
 
     const message = await generateAndPersistOpening({
@@ -78,19 +77,31 @@ export async function POST(request: Request, { params }: { params: { id: string 
     });
 
     const startedStage = await activateTargetStage(params.id, current, targetStage);
-    return NextResponse.json({ stage: startedStage, message, existing: false });
+    const progress = await getProgress(params.id);
+    return NextResponse.json({ stage: startedStage, message, existing: false, progress });
   } catch (error) {
     return jsonError(error, "stage_advance_failed");
   }
 }
 
 async function resolveTargetStage(candidateId: string, current: Stage) {
-  if (normalizeStageName(String(current.name)) === "面试关卡准备") {
+  const currentName = normalizeStageName(String(current.name));
+  if (currentName === "面试关卡准备") {
     const basic = await getStageByName(candidateId, "基础关卡");
     if (!basic) throw new Error("基础关卡未初始化。");
     return basic;
   }
-  return current;
+  if (currentName === "基础关卡") {
+    const progress = await getProgress(candidateId);
+    if (!progress.canAdvanceStage) {
+      throw new Error(`基础关卡尚未完成。当前已完成 ${progress.answeredTurns}/${progress.requiredTurns} 轮，请继续正式作答。`);
+    }
+    await updateStage(current.id, { status: "completed", completed_at: new Date().toISOString() });
+    const ability = await getStageByName(candidateId, "能力关卡");
+    if (!ability) throw new Error("能力关卡未初始化。");
+    return ability;
+  }
+  throw new Error("能力关卡完成前不能继续进入下一关。");
 }
 
 async function activateTargetStage(candidateId: string, current: Stage, target: Stage) {
@@ -128,46 +139,35 @@ async function generateAndPersistOpening(input: {
     raw_content: `Generating opening question for ${input.stage.name}`,
     ai_summary: "正在调用模型生成本关首题。"
   });
-  try {
-    const normalizedStage = { ...input.stage, name: normalizeStageName(String(input.stage.name)) };
-    const opening = await generateStageOpening({
-      provider: input.selectedModel,
-      candidate: input.candidate,
-      stage: normalizedStage,
-      targetRole: input.candidate.target_role ?? input.jobRole.name,
-      targetDifficulty: input.candidate.target_difficulty ?? input.jobRole.difficulty,
-      abilityDimensions: input.jobRole.ability_dimensions,
-      agents: input.agents
-    });
-    const agent = input.agents.find((item) => item.status === "enabled" && item.agent_role === "lead_examiner") ?? input.agents[0];
-    const message = await addMessage({
-      candidate_id: input.candidateId,
-      stage_id: input.stage.id,
-      role: "ai",
-      ai_role: "examiner",
-      model_provider: input.selectedModel,
-      agent_id: agent?.id,
-      content: opening.question
-    });
-    await addEvent({
-      candidate_id: input.candidateId,
-      stage_id: input.stage.id,
-      event_type: normalizedStage.name === "能力关卡" ? "pressure_added" : "ai_question",
-      raw_content: message.content,
-      ai_summary: JSON.stringify(opening),
-      risk_tags: normalizedStage.name === "能力关卡" ? ["时间限制", "工程资源限制", "证据留痕限制"] : []
-    });
-    return message;
-  } catch (error) {
-    await addEvent({
-      candidate_id: input.candidateId,
-      stage_id: input.stage.id,
-      event_type: "stage_question_generation_failed",
-      raw_content: error instanceof Error ? error.message : String(error),
-      ai_summary: "模型生成本关首题失败，未切换关卡状态。"
-    });
-    throw error;
-  }
+  const normalizedStage = { ...input.stage, name: normalizeStageName(String(input.stage.name)) };
+  const opening = await generateStageOpening({
+    provider: input.selectedModel,
+    candidate: input.candidate,
+    stage: normalizedStage,
+    targetRole: input.candidate.target_role ?? input.jobRole.name,
+    targetDifficulty: input.candidate.target_difficulty ?? input.jobRole.difficulty,
+    abilityDimensions: input.jobRole.ability_dimensions,
+    agents: input.agents
+  });
+  const agent = input.agents.find((item) => item.status === "enabled" && item.agent_role === "lead_examiner") ?? input.agents[0];
+  const message = await addMessage({
+    candidate_id: input.candidateId,
+    stage_id: input.stage.id,
+    role: "ai",
+    ai_role: "examiner",
+    model_provider: input.selectedModel,
+    agent_id: agent?.id,
+    content: opening.question
+  });
+  await addEvent({
+    candidate_id: input.candidateId,
+    stage_id: input.stage.id,
+    event_type: normalizedStage.name === "能力关卡" ? "pressure_added" : "ai_question",
+    raw_content: message.content,
+    ai_summary: JSON.stringify(opening),
+    risk_tags: normalizedStage.name === "能力关卡" ? ["时间限制", "工程资源限制", "证据留痕限制"] : []
+  });
+  return message;
 }
 
 async function ensureStageFlow(candidateId: string) {
@@ -199,4 +199,13 @@ async function createDefaultStages(candidateId: string) {
 async function getStageByName(candidateId: string, name: StageName) {
   const stages = await listStages(candidateId);
   return stages.find((stage) => normalizeStageName(String(stage.name)) === name && stage.status !== "completed") ?? null;
+}
+
+async function getProgress(candidateId: string) {
+  const [stages, messages, turnScores] = await Promise.all([
+    listStages(candidateId),
+    listMessages(candidateId),
+    listTurnScores(candidateId)
+  ]);
+  return buildArenaProgress({ stages, messages, turnScores });
 }

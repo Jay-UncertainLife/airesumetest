@@ -3,9 +3,12 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import FlowGuide from "@/app/components/FlowGuide";
+import { buildArenaProgress } from "@/lib/arenaProgress";
 import { stageCopy } from "@/lib/stages";
 import { normalizeStageName, stageRank } from "@/lib/stageNames";
 import { Agent, Candidate, EventLog, Message, ModelProvider, Stage, TurnScore, WorkspaceMessage } from "@/lib/types";
+
+type ArenaProgress = ReturnType<typeof buildArenaProgress>;
 
 type CandidateData = {
   candidate: Candidate;
@@ -15,6 +18,7 @@ type CandidateData = {
   eventLogs: EventLog[];
   turnScores: TurnScore[];
   agents: Agent[];
+  progress?: ArenaProgress;
 };
 
 export default function CandidateArenaPage() {
@@ -31,14 +35,10 @@ export default function CandidateArenaPage() {
   const [statusMessage, setStatusMessage] = useState("");
   const [nowMs, setNowMs] = useState(Date.now());
 
-  const currentStage = useMemo(() => {
-    if (!data) return undefined;
-    const stageIdsWithAiQuestions = new Set(data.messages.filter((message) => message.role === "ai").map((message) => message.stage_id));
-    const stagesWithQuestions = data.stages.filter((stage) => stageIdsWithAiQuestions.has(stage.id));
-    if (stagesWithQuestions.length) return stagesWithQuestions.sort((a, b) => stageRank(b.name) - stageRank(a.name))[0];
-    const activeStages = data.stages.filter((stage) => stage.status === "in_progress");
-    return activeStages.sort((a, b) => stageRank(b.name) - stageRank(a.name))[0];
-  }, [data]);
+  const localProgress = useMemo(() => data ? buildArenaProgress(data) : null, [data]);
+  const progress = data?.progress ?? localProgress;
+  const currentStage = progress?.currentStage ?? undefined;
+  const currentStageName = currentStage ? normalizeStageName(String(currentStage.name)) : "面试关卡准备";
 
   const auth = useCallback(() => {
     const candidateId = localStorage.getItem("candidate_id");
@@ -91,19 +91,25 @@ export default function CandidateArenaPage() {
   }
 
   async function sendAnswer() {
-    if (!answer.trim() || !data) return;
+    if (!answer.trim() || !data || !currentStage) return;
     setLoading(true);
     setError("");
     setStatusMessage("正在调用模型评分并生成下一轮追问，请稍候。");
     try {
-      const result = await authedPost(`/api/candidates/${data.candidate.id}/messages`, { content: answer, model_provider: modelProvider });
+      const submitted = answer;
+      const result = await authedPost(`/api/candidates/${data.candidate.id}/messages`, { content: submitted, model_provider: modelProvider });
       setAnswer("");
-      if (result.autoSubmitted) {
-        router.push("/candidate/done");
-        return;
-      }
+      setData((current) => {
+        if (!current) return current;
+        return {
+          ...current,
+          messages: mergeById(current.messages, [result.candidateMessage, result.aiMessage].filter(Boolean)),
+          turnScores: mergeById(current.turnScores, [result.turnScore].filter(Boolean)),
+          progress: result.progress ?? current.progress
+        };
+      });
       await load();
-      setStatusMessage("本轮评分和追问已生成。");
+      setStatusMessage(result.progress?.stageComplete ? "本关轮次已完成，可以进入下一步。" : "本轮评分和追问已生成。");
     } catch (err) {
       setError(err instanceof Error ? err.message : "提交正式回应失败");
     } finally {
@@ -115,26 +121,23 @@ export default function CandidateArenaPage() {
     if (!data) return;
     setLoading(true);
     setError("");
-    setStatusMessage("正在调用 DeepSeek/OpenAI 生成关卡首题。模型返回前请不要关闭页面。");
+    setStatusMessage(currentStageName === "面试关卡准备" ? "正在生成基础关卡首题。" : "正在进入能力关卡并生成首题。");
     try {
       const result = await authedPost(`/api/candidates/${data.candidate.id}/stage/advance`, {});
-      if (!result?.message?.content) {
-        throw new Error("后端请求完成，但没有返回 AI 首题内容。请检查模型调用日志。");
-      }
+      if (!result?.message?.content) throw new Error("后端未返回 AI 题目内容。");
       setData((current) => {
         if (!current) return current;
-        const nextStages = current.stages.map((stage) => (stage.id === result.stage.id ? result.stage : stage));
-        const hasMessage = current.messages.some((message) => message.id === result.message.id);
         return {
           ...current,
-          stages: nextStages,
-          messages: hasMessage ? current.messages : [...current.messages, result.message]
+          stages: mergeById(current.stages, [result.stage].filter(Boolean)),
+          messages: mergeById(current.messages, [result.message].filter(Boolean)),
+          progress: result.progress ?? current.progress
         };
       });
       await load();
-      setStatusMessage(result.existing ? "已加载已有关卡首题。" : "关卡首题已生成。");
+      setStatusMessage(result.existing ? "已加载已有题目。" : "关卡首题已生成。");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "生成关卡首题失败");
+      setError(err instanceof Error ? err.message : "生成关卡题目失败");
     } finally {
       setLoading(false);
     }
@@ -147,33 +150,26 @@ export default function CandidateArenaPage() {
     setError("");
     setStatusMessage(`正在调用 ${modelProvider} 生成模型交互回复。`);
     setWorkspaceInput("");
-    setData({
-      ...data,
-      workspaceMessages: [
-        ...data.workspaceMessages,
-        {
-          id: `optimistic-${Date.now()}`,
-          candidate_id: data.candidate.id,
-          stage_id: currentStage?.id,
-          role: "candidate",
-          model_provider: modelProvider,
-          content: submitted,
-          created_at: new Date().toISOString()
-        }
-      ]
-    });
+    const optimistic: WorkspaceMessage = {
+      id: `optimistic-${Date.now()}`,
+      candidate_id: data.candidate.id,
+      stage_id: currentStage?.id,
+      role: "candidate",
+      model_provider: modelProvider,
+      content: submitted,
+      created_at: new Date().toISOString()
+    };
+    setData({ ...data, workspaceMessages: mergeById(data.workspaceMessages, [optimistic]) });
     try {
-      const result = await authedPost(`/api/candidates/${data.candidate.id}/workspace-chat`, {
-        content: submitted,
-        model_provider: modelProvider
-      });
+      const result = await authedPost(`/api/candidates/${data.candidate.id}/workspace-chat`, { content: submitted, model_provider: modelProvider });
       setData((current) => {
         if (!current) return current;
         return {
           ...current,
-          workspaceMessages: current.workspaceMessages
-            .filter((message) => !message.id.startsWith("optimistic-"))
-            .concat([result.userMessage, result.modelMessage].filter(Boolean))
+          workspaceMessages: mergeById(
+            current.workspaceMessages.filter((message) => !message.id.startsWith("optimistic-")),
+            [result.userMessage, result.modelMessage].filter(Boolean)
+          )
         };
       });
       await load();
@@ -185,37 +181,31 @@ export default function CandidateArenaPage() {
     }
   }
 
-  if (!data || !currentStage) return <div className="container">加载考核现场...</div>;
+  if (!data || !currentStage || !progress) return <div className="container">加载考核现场...</div>;
 
   const stageMessages = data.messages.filter((message) => message.stage_id === currentStage.id);
-  const workspaceMessages = data.workspaceMessages;
-  const hasNextStage = data.stages.some((stage) => stage.status === "not_started");
-  const normalizedCurrentStageName = normalizeStageName(String(currentStage.name));
-  const isPrepStage = normalizedCurrentStageName === "面试关卡准备";
-  const activeStep = isPrepStage ? 2 : normalizedCurrentStageName === "基础关卡" ? 3 : 4;
-  const latestScore = data.turnScores[data.turnScores.length - 1];
+  const stageScores = data.turnScores.filter((score) => score.stage_id === currentStage.id);
+  const latestScore = stageScores[stageScores.length - 1];
+  const activeStep = currentStageName === "面试关卡准备" ? 2 : currentStageName === "基础关卡" ? 3 : 4;
   const elapsedSeconds = currentStage.started_at ? Math.max(0, Math.floor((nowMs - new Date(currentStage.started_at).getTime()) / 1000)) : 0;
   const targetSeconds = currentStage.target_duration_seconds ?? 0;
   const remainingSeconds = targetSeconds ? targetSeconds - elapsedSeconds : 0;
+  const canStartBasic = currentStageName === "面试关卡准备";
+  const canGoAbility = progress.canAdvanceStage;
+  const canSubmitFinal = progress.canSubmitFinal;
+  const answerDisabled = loading || stageMessages.length === 0 || progress.stageComplete || data.candidate.status === "evaluated";
 
   return (
     <div className="container">
       <FlowGuide active={activeStep} />
       {error ? <p className="badge cut">{error}</p> : null}
       {statusMessage ? <p className="badge">{statusMessage}</p> : null}
-      {latestScore?.recommendation === "Cut" ? (
-        <section className="panel cut-panel">
-          <h2>触发 Cut / 人工复核</h2>
-          <p>本轮得分 {latestScore.average_score}，系统已记录人工复核提示。</p>
-          <p className="muted">{latestScore.reason_summary}</p>
-        </section>
-      ) : null}
 
       <div className="arena-grid arena-grid-main">
         <aside className="panel">
           <p className="badge">{data.candidate.target_role}</p>
-          <h2>{normalizedCurrentStageName}</h2>
-          <p className="muted">{stageCopy[normalizedCurrentStageName]?.goal ?? "AI 考核官将根据候选人画像、岗位难度和能力维度生成本关问题。"}</p>
+          <h2>{currentStageName}</h2>
+          <p className="muted">{stageCopy[currentStageName]?.goal}</p>
           {targetSeconds > 0 ? (
             <div className={`timer ${remainingSeconds < 0 ? "overtime" : ""}`}>
               <span>目标时长：{formatDuration(targetSeconds)}</span>
@@ -223,6 +213,8 @@ export default function CandidateArenaPage() {
               <span>已用：{formatDuration(elapsedSeconds)}</span>
             </div>
           ) : null}
+          <p className="badge">本关进度：{progress.answeredTurns}/{progress.requiredTurns} 轮</p>
+          {latestScore ? <p className="badge">最新得分：{latestScore.average_score} / {latestScore.recommendation}</p> : null}
 
           <h2>Agent</h2>
           <div className="timeline">
@@ -245,12 +237,16 @@ export default function CandidateArenaPage() {
           </div>
 
           <div className="actions">
-            {hasNextStage ? (
-              <button className="btn secondary" onClick={advanceStage} disabled={loading}>
-                {loading ? "模型正在生成题目..." : isPrepStage ? "生成基础关卡首题" : "进入下一关"}
+            {canStartBasic ? (
+              <button className="btn secondary" onClick={advanceStage} disabled={loading}>生成基础关卡首题</button>
+            ) : currentStageName === "基础关卡" ? (
+              <button className="btn secondary" onClick={advanceStage} disabled={loading || !canGoAbility}>
+                {canGoAbility ? "进入能力关卡" : `完成 ${progress.requiredTurns} 轮后进入能力关`}
               </button>
             ) : (
-              <button className="btn" onClick={() => router.push("/candidate/final-submit")}>提交最终方案</button>
+              <button className="btn" onClick={() => router.push("/candidate/final-submit")} disabled={!canSubmitFinal || loading}>
+                {canSubmitFinal ? "提交最终方案" : `完成 ${progress.requiredTurns} 轮后可提交`}
+              </button>
             )}
           </div>
         </aside>
@@ -261,11 +257,7 @@ export default function CandidateArenaPage() {
             {stageMessages.length === 0 ? (
               <div className="message ai">
                 <strong>AI 考核官</strong><br />
-                {loading
-                  ? "正在等待模型生成题目，请不要关闭页面。"
-                  : isPrepStage
-                    ? "当前仍在面试关卡准备。请点击左侧“生成基础关卡首题”，系统会调用模型生成正式题目。"
-                    : "本关尚未生成首题。请点击左侧按钮触发 AI 出题。"}
+                {canStartBasic ? "请点击左侧“生成基础关卡首题”。" : "本关尚未生成题目，请点击左侧按钮。"}
               </div>
             ) : null}
             {stageMessages.map((message) => (
@@ -277,19 +269,19 @@ export default function CandidateArenaPage() {
           </div>
           <div className="field" style={{ marginTop: 16 }}>
             <label>正式回应</label>
-            <textarea className="textarea" value={answer} onChange={(event) => setAnswer(event.target.value)} />
+            <textarea className="textarea" value={answer} onChange={(event) => setAnswer(event.target.value)} disabled={answerDisabled} />
           </div>
-          <button className="btn" onClick={sendAnswer} disabled={loading || stageMessages.length === 0}>
-            {loading ? "正在调用模型评分并追问..." : "提交正式回应"}
+          <button className="btn" onClick={sendAnswer} disabled={answerDisabled || !answer.trim()}>
+            {loading ? "正在调用模型评分并追问..." : progress.stageComplete ? "本关已完成" : "提交正式回应"}
           </button>
         </section>
 
         <aside className="panel">
           <h2>维度评分表</h2>
           <div className="timeline">
-            {data.turnScores.map((score) => (
+            {stageScores.length ? stageScores.map((score, index) => (
               <div className="event" key={score.id}>
-                <div className="event-type">{score.average_score} 分 / {score.recommendation}</div>
+                <div className="event-type">第 {index + 1} 轮：{score.average_score} 分 / {score.recommendation}</div>
                 <div>{score.reason_summary}</div>
                 <table className="mini-table">
                   <tbody>
@@ -299,7 +291,7 @@ export default function CandidateArenaPage() {
                   </tbody>
                 </table>
               </div>
-            ))}
+            )) : <p className="muted">提交正式回应后，系统会调用模型生成维度评分。</p>}
           </div>
         </aside>
       </div>
@@ -322,26 +314,16 @@ export default function CandidateArenaPage() {
             </select>
           </div>
           <div className="chat workspace-chat assistant-chat">
-            {workspaceMessages.map((message) => (
+            {data.workspaceMessages.map((message) => (
               <div key={message.id} className={`message ${message.role === "model" ? "ai" : "candidate"}`}>
                 <strong>{message.role === "model" ? "模型助手" : "候选人"}</strong><br />
                 {message.content}
               </div>
             ))}
-            {workspaceLoading ? (
-              <div className="message ai">
-                <strong>模型助手</strong><br />
-                已收到问题，正在等待 {modelProvider} 返回。
-              </div>
-            ) : null}
+            {workspaceLoading ? <div className="message ai"><strong>模型助手</strong><br />正在等待 {modelProvider} 返回。</div> : null}
           </div>
-          <textarea
-            className="textarea"
-            value={workspaceInput}
-            onChange={(event) => setWorkspaceInput(event.target.value)}
-            placeholder="输入你的思考问题，系统会调用后端配置的大模型并留痕。"
-          />
-          <button className="btn secondary" onClick={sendWorkspaceMessage} disabled={workspaceLoading}>
+          <textarea className="textarea" value={workspaceInput} onChange={(event) => setWorkspaceInput(event.target.value)} placeholder="输入你的思考问题，系统会调用后端配置的大模型并留痕。" />
+          <button className="btn secondary" onClick={sendWorkspaceMessage} disabled={workspaceLoading || !workspaceInput.trim()}>
             {workspaceLoading ? "模型思考中..." : `发送给 ${modelProvider}`}
           </button>
         </section>
@@ -365,7 +347,8 @@ function mergeCandidateData(current: CandidateData | null, next: CandidateData):
     workspaceMessages: mergeById(current.workspaceMessages, next.workspaceMessages),
     eventLogs: mergeById(current.eventLogs, next.eventLogs),
     turnScores: mergeById(current.turnScores, next.turnScores),
-    agents: next.agents.length ? next.agents : current.agents
+    agents: next.agents.length ? next.agents : current.agents,
+    progress: next.progress ?? current.progress
   };
 }
 
