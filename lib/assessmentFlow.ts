@@ -1,12 +1,10 @@
-import { generateFinalEvaluation, generateFollowUp, generateStageOpening, generateWorkspaceReply, scoreTurn } from "./ai";
+import { generateFollowUp, generateStageOpening, generateWorkspaceReply, scoreTurn } from "./ai";
 import { AssessmentStageKey, AssessmentState } from "./assessmentTypes";
 import { calculateTimeCoefficient, basicStageDimensions, stageDurations, timeoutLevel } from "./stages";
 import { ABILITY_STAGE, BASIC_STAGE, stageNameFromKey } from "./stageNames";
 import { AbilityDimension, Candidate, ModelProvider, Stage, TurnScore } from "./types";
 import { listAgents } from "./repositories/agents";
 import { updateCandidate } from "./repositories/candidates";
-import { listEvents } from "./repositories/events";
-import { listMessages, listWorkspaceMessages } from "./repositories/messages";
 import {
   addAssessmentEvent,
   addAssessmentTurnScore,
@@ -25,7 +23,6 @@ import {
   getLatestFinalReviewReport,
   getQuestion,
   getScoreForQuestion,
-  getStageProgress,
   listAnswers,
   listAssessmentScores,
   listChatMessages,
@@ -340,7 +337,7 @@ export async function scoreCurrentAnswer(candidate: Candidate, provider: ModelPr
       risk_tags: scoreDraft.risk_tags
     });
     if (!needsManualReview && !needsFollowUp && progress.stage_key === "basic") {
-      await ensureStageProgress({ candidate_id: candidate.id, stage_key: "ability", current_state: "INIT", target_duration_seconds: STAGE_TARGET_SECONDS.ability });
+      const abilityProgress = await ensureStageProgress({ candidate_id: candidate.id, stage_key: "ability", current_state: "INIT", target_duration_seconds: STAGE_TARGET_SECONDS.ability });
       await addAssessmentEvent({
         candidate_id: candidate.id,
         stage_key: "ability",
@@ -348,23 +345,23 @@ export async function scoreCurrentAnswer(candidate: Candidate, provider: ModelPr
         event_source: "system",
         event_payload: { from: "basic", previous_score: finalScore }
       });
+      return generateQuestion(candidate, "ability", abilityProgress, "initial", "GENERATING_FIRST_QUESTION", provider);
     }
     if (!needsManualReview && !needsFollowUp && progress.stage_key === "ability") {
       const finalProgress = await ensureStageProgress({ candidate_id: candidate.id, stage_key: "final", current_state: "INIT", target_duration_seconds: STAGE_TARGET_SECONDS.final });
       await updateStageProgress(finalProgress.id, {
-        current_state: "FINAL_EVALUATION_COMPLETED",
-        score_status: "score_success",
+        current_state: "INIT",
+        score_status: "score_pending",
         dimension_progress_json: { synced_from_stage: "ability", synced_answer_id: answer.answer_id }
       });
       await updateCandidate(candidate.id, {
         final_solution: answer.answer_text ?? "",
-        status: "assessment_completed",
-        final_recommendation: "通过"
+        status: "assessment_started"
       });
       await addAssessmentEvent({
         candidate_id: candidate.id,
         stage_key: "final",
-        event_type: "stage_completed",
+        event_type: "stage_entered",
         event_source: "system",
         event_payload: { from: "ability", previous_score: finalScore, synced_answer_id: answer.answer_id }
       });
@@ -456,23 +453,8 @@ export async function finalSubmit(candidate: Candidate, input: { final_solution:
     ai_usage_note: input.ai_usage_note,
     status: "submitted"
   });
-  const [messages, workspaceMessages, eventLogs, turnScores] = await Promise.all([
-    listMessages(candidate.id),
-    listWorkspaceMessages(candidate.id),
-    listEvents(candidate.id),
-    listAssessmentScores(candidate.id)
-  ]);
-  const evaluation = await generateFinalEvaluation({
-    provider: input.provider,
-    candidateInfo: candidate,
-    interviewerEvaluations: candidate.interviewer_evaluations ?? [],
-    messages,
-    eventLogs,
-    workspaceMessages,
-    turnScores,
-    finalSolution: input.final_solution,
-    aiUsageNote: input.ai_usage_note
-  });
+  const turnScores = await listAssessmentScores(candidate.id);
+  const evaluation = decideFinalSubmitScore(input.final_solution);
   const report = await addFinalReviewReport({
     candidate_id: candidate.id,
     final_profile_json: evaluation,
@@ -652,6 +634,7 @@ function buildTiming(progress?: { question_started_at?: string | null; target_du
 
 function buildButton(progress: any, question: any, answer: any, score: any) {
   if (!progress) return { label: "进入基础关卡", action: "start_first_question", disabled: false };
+  if (progress.stage_key === "final" && progress.current_state === "INIT") return { label: "进入最终评价", action: "final_submit", disabled: false };
   if (progress.current_state === "INIT") return { label: "进入第一题", action: "start_first_question", disabled: false };
   if (progress.current_state === "GENERATION_FAILED") return { label: "重新生成题目", action: "start_first_question", disabled: false };
   if (progress.current_state === "GENERATING_FIRST_QUESTION" || progress.current_state === "GENERATING_NEXT_QUESTION") {
@@ -742,6 +725,38 @@ function decideTestScore(answerText: string, questionIndex: number): {
     scoreStatus: "score_passed",
     nextAction: "pass",
     reason: `测试评分规则：正式回答有效字符数 ${answerLength}，达到 30 以上，直接通过。`
+  };
+}
+
+function decideFinalSubmitScore(finalSolution: string) {
+  const answerLength = Array.from(finalSolution.replace(/\s/g, "")).length;
+  if (answerLength < 10) {
+    return {
+      average_score: 20,
+      recommendation: "Cut" as const,
+      reason_summary: `最终评价测试评分：最终方案有效字符数 ${answerLength}，低于 10，建议不通过并进入人工复核。`,
+      reviewer_notes: "最终方案内容不足，建议审核人复核。",
+      evidence_summary: [`有效字符数 ${answerLength}`],
+      risk_tags: ["final_solution_too_short"]
+    };
+  }
+  if (answerLength < 30) {
+    return {
+      average_score: 68,
+      recommendation: "继续观察" as const,
+      reason_summary: `最终评价测试评分：最终方案有效字符数 ${answerLength}，介于 10 到 30，建议继续观察。`,
+      reviewer_notes: "最终方案较短，建议试用期继续验证表达完整度。",
+      evidence_summary: [`有效字符数 ${answerLength}`],
+      risk_tags: ["final_solution_brief"]
+    };
+  }
+  return {
+    average_score: 92,
+    recommendation: "通过" as const,
+    reason_summary: `最终评价测试评分：最终方案有效字符数 ${answerLength}，达到 30 以上，建议通过。`,
+    reviewer_notes: "最终方案达到测试通过标准，审核人仍可复核具体作答。",
+    evidence_summary: [`有效字符数 ${answerLength}`],
+    risk_tags: []
   };
 }
 

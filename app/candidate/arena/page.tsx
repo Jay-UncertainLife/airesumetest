@@ -59,6 +59,7 @@ export default function CandidateArenaPage() {
   const [assistantOpen, setAssistantOpen] = useState(false);
   const [assistantLoading, setAssistantLoading] = useState(false);
   const [stageNotice, setStageNotice] = useState("");
+  const [stageNoticeTarget, setStageNoticeTarget] = useState<"stay" | "final">("stay");
   const [assistantPos, setAssistantPos] = useState({ x: 24, y: 24 });
   const [assistantSize, setAssistantSize] = useState({ width: 420, height: 460 });
   const [error, setError] = useState("");
@@ -130,8 +131,14 @@ export default function CandidateArenaPage() {
       questionIdRef.current = nextQuestionId;
       setAnswer(next.draft?.draft_text ?? next.answer?.answer_text ?? "");
     }
-    if (data?.stage_key === "basic" && next.stage_key === "ability") setStageNotice("基础关卡已通过，正在进入能力关卡。");
-    if (data?.stage_key === "ability" && next.stage_key === "final") setStageNotice("能力关卡已通过，正在进入最终评价。");
+    if (data?.stage_key === "basic" && next.stage_key === "ability") {
+      setStageNotice("基础关卡已通过，正在进入能力关卡。");
+      setStageNoticeTarget("stay");
+    }
+    if (data?.stage_key === "ability" && next.stage_key === "final") {
+      setStageNotice("能力关卡已通过，进入最终评价。");
+      setStageNoticeTarget("final");
+    }
   }
 
   useEffect(() => {
@@ -164,11 +171,12 @@ export default function CandidateArenaPage() {
   }, []);
 
   useEffect(() => {
-    const shouldPoll = isBusy || ["GENERATION_FAILED", "SCORE_FAILED"].includes(data?.activeProgress?.current_state ?? "");
+    const currentState = data?.activeProgress?.current_state ?? "";
+    const shouldPoll = !loadingAction && ["GENERATING_FIRST_QUESTION", "GENERATING_NEXT_QUESTION", "SUBMITTING_ANSWER", "SCORING", "GENERATION_FAILED", "SCORE_FAILED"].includes(currentState);
     if (!shouldPoll) return;
     const timer = window.setInterval(load, 3500);
     return () => window.clearInterval(timer);
-  }, [data?.activeProgress?.current_state, isBusy, load]);
+  }, [data?.activeProgress?.current_state, loadingAction, load]);
 
   useEffect(() => {
     if (!canEdit || !data?.current_question) return;
@@ -250,7 +258,8 @@ export default function CandidateArenaPage() {
         ai_usage_note: "",
         submit_type: submitType,
         client_submit_id: `${data.current_question.question_id}-${Date.now()}`
-      });
+      }, false);
+      setLoadingAction("score_answer");
       await post("/api/candidate/stage/score-answer", {});
     } catch (err) {
       setError(err instanceof Error ? err.message : "提交回答失败");
@@ -331,8 +340,17 @@ export default function CandidateArenaPage() {
         <div className="modal-backdrop">
           <div className="modal">
             <h2>{stageNotice}</h2>
-            <p className="muted">系统已保存上一阶段结果，当前页面会继续使用云端状态恢复。</p>
-            <button className="btn" type="button" onClick={() => setStageNotice("")}>继续</button>
+            <p className="muted">{stageNoticeTarget === "final" ? "系统已同步能力关卡作答，请进入最终评价确认和修改。" : "能力关卡题目已准备完成，可以继续作答。"}</p>
+            <button
+              className="btn"
+              type="button"
+              onClick={() => {
+                setStageNotice("");
+                if (stageNoticeTarget === "final") router.replace("/candidate/final-submit");
+              }}
+            >
+              继续
+            </button>
           </div>
         </div>
       ) : null}

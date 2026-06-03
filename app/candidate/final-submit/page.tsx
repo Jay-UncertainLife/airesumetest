@@ -7,7 +7,6 @@ import FlowGuide from "@/app/components/FlowGuide";
 export default function FinalSubmitPage() {
   const router = useRouter();
   const [finalSolution, setFinalSolution] = useState("");
-  const [aiUsageNote, setAiUsageNote] = useState("");
   const [readiness, setReadiness] = useState("正在检查能力关卡完成状态...");
   const [canSubmit, setCanSubmit] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -24,9 +23,11 @@ export default function FinalSubmitPage() {
       .then((res) => res.json().then((data) => ({ ok: res.ok, data })))
       .then(({ ok, data }) => {
         if (!ok) throw new Error(data.message ?? data.error ?? "读取候选人进度失败");
-        const ready = data.activeProgress?.current_state === "ABILITY_STAGE_COMPLETED" || data.stage_key === "final";
+        const ready = data.progressRows?.some((row: any) => row.stage_key === "ability" && row.current_state === "ABILITY_STAGE_COMPLETED") || data.stage_key === "final";
+        const syncedDraft = buildAbilityDraft(data);
+        setFinalSolution((current) => current.trim() ? current : data.candidate?.final_solution?.trim() || syncedDraft);
         setCanSubmit(ready);
-        setReadiness(ready ? "能力关卡已完成，可以提交最终方案。" : "能力关卡尚未完成，请先返回关卡页继续作答。");
+        setReadiness(ready ? "已同步能力关卡作答，可以在下方修改后提交最终评价。" : "能力关卡尚未完成，请先返回关卡页继续作答。");
       })
       .catch((err) => {
         setCanSubmit(false);
@@ -47,7 +48,7 @@ export default function FinalSubmitPage() {
     const res = await fetch("/api/candidate/stage/final-submit", {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-candidate-token": token },
-      body: JSON.stringify({ candidate_id: candidateId, candidate_token: token, final_solution: finalSolution, ai_usage_note: aiUsageNote })
+      body: JSON.stringify({ candidate_id: candidateId, candidate_token: token, final_solution: finalSolution, ai_usage_note: "" })
     });
     const data = await res.json();
     setLoading(false);
@@ -74,21 +75,21 @@ export default function FinalSubmitPage() {
             placeholder="请提交最终方案、关键取舍、落地路径和可复盘交付物。"
           />
         </div>
-        <div className="field">
-          <label>AI 使用说明</label>
-          <textarea
-            className="textarea usage-textarea"
-            value={aiUsageNote}
-            onChange={(event) => setAiUsageNote(event.target.value)}
-            disabled={!canSubmit || loading}
-            placeholder="说明是否使用 AI、使用了什么、采纳/否定/修改了哪些内容。"
-          />
-        </div>
         <button className="btn" onClick={submit} disabled={loading || !canSubmit || !finalSolution.trim()}>
-          {loading ? "正在生成最终评审报告..." : "二次确认并提交"}
+          {loading ? "正在评分并提交最终评价..." : "提交最终评价"}
         </button>
         {error ? <p className="badge cut">{error}</p> : null}
       </section>
     </div>
   );
+}
+
+function buildAbilityDraft(data: any) {
+  const questions = (data.questions ?? []).filter((question: any) => question.stage_key === "ability");
+  if (!questions.length) return "";
+  return questions.map((question: any, index: number) => {
+    const answer = (data.answers ?? []).find((item: any) => item.question_id === question.question_id);
+    const title = question.question_type === "followup" || index > 0 ? `追问题${index}` : "第一题";
+    return `${title}\n题目：${question.question_text}\n回答：${answer?.answer_text ?? ""}`;
+  }).join("\n\n");
 }
